@@ -7,11 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
-use abacus::{dispatch_prompt, parse_ready, parse_worktree_created, select_bead};
+use abacus::{dispatch_prompt, parse_ready, parse_worktree_created, select_bead, version_string};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("--version") | Some("-V") => {
+            println!("abacus {}", version_string());
+        }
         Some("run") => {
             let repo = args.get(1).map(PathBuf::from).unwrap_or_else(|| ".".into());
             if let Err(e) = cmd_run(&repo) {
