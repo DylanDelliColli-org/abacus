@@ -33,6 +33,44 @@ pub fn select_bead(beads: &[ReadyBead]) -> Option<&ReadyBead> {
     beads.iter().min_by_key(|b| b.priority)
 }
 
+/// The evidence `abacus run` uses after Herdr says a lane has settled.
+/// Herdr's agent state is only a wake-up signal; the bead status is the
+/// durable account of whether the worker actually engaged and completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BeadOutcome {
+    Completed,
+    Incomplete,
+    NeverEngaged,
+}
+
+pub fn classify_bead_status(status: &str) -> Result<BeadOutcome, String> {
+    match status {
+        "closed" => Ok(BeadOutcome::Completed),
+        "in_progress" => Ok(BeadOutcome::Incomplete),
+        "open" => Ok(BeadOutcome::NeverEngaged),
+        other => Err(format!("unsupported bead status {other:?}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct BeadState {
+    status: String,
+}
+
+/// Parse the one-record array emitted by `br show <id> --json` and classify
+/// the worker outcome represented by its status.
+pub fn parse_bead_outcome(json: &str) -> Result<BeadOutcome, String> {
+    let beads: Vec<BeadState> = serde_json::from_str(json)
+        .map_err(|e| format!("unparseable `br show --json` output: {e}"))?;
+    let [bead] = beads.as_slice() else {
+        return Err(format!(
+            "expected one bead from `br show --json`, got {}",
+            beads.len()
+        ));
+    };
+    classify_bead_status(&bead.status)
+}
+
 /// The lane a `herdr worktree create` call opened.
 #[derive(Debug, PartialEq)]
 pub struct Lane {
@@ -200,5 +238,21 @@ mod tests {
         let close = p.find("br close abacus-v8s").unwrap();
         let push = p.find("git push -u origin lane/abacus-v8s").unwrap();
         assert!(close < push, "close must happen before push: {p}");
+    }
+
+    #[test]
+    fn bead_status_classifies_the_three_worker_outcomes() {
+        assert_eq!(
+            classify_bead_status("closed").unwrap(),
+            BeadOutcome::Completed
+        );
+        assert_eq!(
+            classify_bead_status("in_progress").unwrap(),
+            BeadOutcome::Incomplete
+        );
+        assert_eq!(
+            classify_bead_status("open").unwrap(),
+            BeadOutcome::NeverEngaged
+        );
     }
 }
