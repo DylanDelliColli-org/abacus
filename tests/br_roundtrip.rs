@@ -2,10 +2,10 @@
 //! `abacus` binary against real backlogs. Requires `br` on PATH (it is the
 //! pinned substrate — a machine that can't run these can't run abacus).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use abacus::{parse_ready, select_bead};
+use abacus::{dispatch_prompt, parse_ready, select_bead};
 
 struct TempWorkspace(PathBuf);
 
@@ -33,6 +33,20 @@ fn br(dir: &PathBuf, args: &[&str]) -> String {
     assert!(
         out.status.success(),
         "br {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git must be on PATH");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -94,4 +108,80 @@ fn abacus_without_a_command_prints_usage() {
     let out = Command::new(env!("CARGO_BIN_EXE_abacus")).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage"));
+}
+
+#[test]
+fn dispatch_protocol_pushes_the_closed_bead_and_leaves_the_lane_clean() {
+    let ws = TempWorkspace::new("closed-push");
+    let origin = ws.0.join("origin.git");
+    let lane = ws.0.join("lane");
+    let origin_arg = origin.to_str().unwrap();
+    let lane_arg = lane.to_str().unwrap();
+
+    git(&ws.0, &["init", "--bare", origin_arg]);
+    git(&ws.0, &["init", "-b", "lane/it-work", lane_arg]);
+    br(&lane, &["init", "--prefix", "it"]);
+    br(&lane, &["create", "--title=protocol regression"]);
+
+    let json = br(&lane, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead_id = &beads[0].id;
+    let prompt = dispatch_prompt(bead_id, "lane/it-work");
+    let close = prompt.find(&format!("br close {bead_id}")).unwrap();
+    let stage = prompt.find("git add .beads").unwrap();
+    let commit = prompt.find("commit all work").unwrap();
+    let push = prompt.find("git push -u origin lane/it-work").unwrap();
+    assert!(
+        close < stage && stage < commit && commit < push,
+        "dispatch protocol is out of order: {prompt}"
+    );
+
+    git(&lane, &["add", ".beads"]);
+    git(
+        &lane,
+        &[
+            "-c",
+            "user.name=Abacus Integration Test",
+            "-c",
+            "user.email=abacus@example.invalid",
+            "commit",
+            "-m",
+            "seed open bead",
+        ],
+    );
+    git(&lane, &["remote", "add", "origin", origin_arg]);
+
+    br(&lane, &["update", bead_id, "--claim"]);
+    br(&lane, &["close", bead_id]);
+    git(&lane, &["add", ".beads"]);
+    git(
+        &lane,
+        &[
+            "-c",
+            "user.name=Abacus Integration Test",
+            "-c",
+            "user.email=abacus@example.invalid",
+            "commit",
+            "-m",
+            "close completed bead",
+        ],
+    );
+    git(&lane, &["push", "-u", "origin", "lane/it-work"]);
+
+    assert!(git(&lane, &["status", "--porcelain"]).is_empty());
+    let remote_tracker = git(
+        &lane,
+        &[
+            "--git-dir",
+            origin_arg,
+            "show",
+            "lane/it-work:.beads/issues.jsonl",
+        ],
+    );
+    let pushed_bead = remote_tracker
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|bead| bead["id"] == bead_id.as_str())
+        .expect("pushed branch must contain the bead");
+    assert_eq!(pushed_bead["status"], "closed");
 }

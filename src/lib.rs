@@ -77,9 +77,10 @@ pub fn dispatch_prompt(bead_id: &str, branch: &str) -> String {
         "You are the worker lane for bead {bead_id}. This pane's working directory is a git \
          worktree on branch {branch}; do all work here. Run `br show {bead_id}` for your full \
          scope, then `br update {bead_id} --claim`. Write the failing test first, then \
-         implement until it passes, then run the full test suite. Commit, push with \
-         `git push -u origin {branch}`, then run `br close {bead_id}`. If you cannot proceed, \
-         say BLOCKED and why, and stop."
+         implement until it passes, then run the full test suite. Once it passes, run \
+         `br close {bead_id}`, then `git add .beads` along with your source and test changes, \
+         commit all work, and push with `git push -u origin {branch}`. Verify the worktree is \
+         clean. If you cannot proceed, say BLOCKED and why, and stop."
     )
 }
 
@@ -185,5 +186,9 @@ mod tests {
         assert!(p.contains("br show abacus-v8s"));
         assert!(p.contains("br close abacus-v8s"));
         assert!(p.contains("git push -u origin lane/abacus-v8s"));
+
+        let close = p.find("br close abacus-v8s").unwrap();
+        let push = p.find("git push -u origin lane/abacus-v8s").unwrap();
+        assert!(close < push, "close must happen before push: {p}");
     }
 }
