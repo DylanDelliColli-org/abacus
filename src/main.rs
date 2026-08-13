@@ -4,6 +4,7 @@
 //! acceptance, and evidence chains are deliberately absent (SHIFT-REPORT
 //! 2026-08-13 §3).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
@@ -25,11 +26,100 @@ fn main() {
                 exit(1);
             }
         }
+        Some("merge-jsonl") => {
+            let [_, ours, base, theirs] = args.as_slice() else {
+                print_usage();
+                exit(2);
+            };
+            if let Err(e) = cmd_merge_jsonl(Path::new(ours), Path::new(base), Path::new(theirs)) {
+                eprintln!("abacus merge-jsonl: {e}");
+                exit(1);
+            }
+        }
         _ => {
-            eprintln!("usage: abacus run [repo-path]");
+            print_usage();
             exit(2);
         }
     }
+}
+
+fn print_usage() {
+    eprintln!("usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>");
+}
+
+#[derive(serde::Deserialize)]
+struct MergeIssue {
+    id: String,
+    updated_at: String,
+}
+
+struct MergeLine<'a> {
+    updated_at: String,
+    line: &'a str,
+}
+
+/// Merge the three snapshots as issue records rather than text lines.
+///
+/// Inputs are considered in ours/theirs/base order so an exact timestamp tie
+/// keeps ours. `BTreeMap` makes the resulting tracker stable by issue id.
+fn merge_jsonl<'a>(ours: &'a str, base: &'a str, theirs: &'a str) -> Result<String, String> {
+    let mut merged: BTreeMap<String, MergeLine<'a>> = BTreeMap::new();
+    for (source, input) in [("ours", ours), ("theirs", theirs), ("base", base)] {
+        for (line_index, line) in input.lines().enumerate() {
+            let issue: MergeIssue = serde_json::from_str(line).map_err(|e| {
+                format!(
+                    "cannot parse {source} line {} as an issue: {e}",
+                    line_index + 1
+                )
+            })?;
+            if issue.id.is_empty() {
+                return Err(format!(
+                    "cannot parse {source} line {} as an issue: id is empty",
+                    line_index + 1
+                ));
+            }
+            if issue.updated_at.is_empty() {
+                return Err(format!(
+                    "cannot parse {source} line {} as an issue: updated_at is empty",
+                    line_index + 1
+                ));
+            }
+
+            match merged.get(&issue.id) {
+                Some(current) if current.updated_at >= issue.updated_at => {}
+                _ => {
+                    merged.insert(
+                        issue.id,
+                        MergeLine {
+                            updated_at: issue.updated_at,
+                            line,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let mut output = String::new();
+    for issue in merged.values() {
+        output.push_str(issue.line);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn cmd_merge_jsonl(ours: &Path, base: &Path, theirs: &Path) -> Result<(), String> {
+    let read = |label: &str, path: &Path| {
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {label} file {}: {e}", path.display()))
+    };
+    let ours_jsonl = read("ours", ours)?;
+    let base_jsonl = read("base", base)?;
+    let theirs_jsonl = read("theirs", theirs)?;
+    let merged = merge_jsonl(&ours_jsonl, &base_jsonl, &theirs_jsonl)?;
+
+    std::fs::write(ours, merged)
+        .map_err(|e| format!("cannot write ours file {}: {e}", ours.display()))
 }
 
 fn cmd_run(repo: &Path) -> Result<(), String> {
@@ -149,4 +239,86 @@ fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, S
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_jsonl_uses_the_line_with_the_latest_updated_at() {
+        let ours = concat!(
+            r#"{"id":"ab-a","updated_at":"2026-08-13T10:00:02Z","side":"ours"}"#,
+            "\n",
+            r#"{"id":"ab-b","updated_at":"2026-08-13T10:00:04Z","side":"ours"}"#,
+            "\n",
+        );
+        let base = concat!(
+            r#"{"id":"ab-a","updated_at":"2026-08-13T10:00:01Z","side":"base"}"#,
+            "\n",
+            r#"{"id":"ab-b","updated_at":"2026-08-13T10:00:01Z","side":"base"}"#,
+            "\n",
+        );
+        let theirs = concat!(
+            r#"{"id":"ab-a","updated_at":"2026-08-13T10:00:03Z","side":"theirs"}"#,
+            "\n",
+            r#"{"id":"ab-b","updated_at":"2026-08-13T10:00:03Z","side":"theirs"}"#,
+            "\n",
+        );
+
+        let merged = merge_jsonl(ours, base, theirs).unwrap();
+
+        assert_eq!(
+            merged,
+            concat!(
+                r#"{"id":"ab-a","updated_at":"2026-08-13T10:00:03Z","side":"theirs"}"#,
+                "\n",
+                r#"{"id":"ab-b","updated_at":"2026-08-13T10:00:04Z","side":"ours"}"#,
+                "\n",
+            )
+        );
+    }
+
+    #[test]
+    fn merge_jsonl_unions_ids_from_all_three_inputs() {
+        let ours = concat!(
+            r#"{"id":"ab-ours","updated_at":"2026-08-13T10:00:01Z"}"#,
+            "\n",
+        );
+        let base = concat!(
+            r#"{"id":"ab-base","updated_at":"2026-08-13T10:00:01Z"}"#,
+            "\n",
+        );
+        let theirs = concat!(
+            r#"{"id":"ab-theirs","updated_at":"2026-08-13T10:00:01Z"}"#,
+            "\n",
+        );
+
+        let merged = merge_jsonl(ours, base, theirs).unwrap();
+
+        assert_eq!(
+            merged,
+            concat!(
+                r#"{"id":"ab-base","updated_at":"2026-08-13T10:00:01Z"}"#,
+                "\n",
+                r#"{"id":"ab-ours","updated_at":"2026-08-13T10:00:01Z"}"#,
+                "\n",
+                r#"{"id":"ab-theirs","updated_at":"2026-08-13T10:00:01Z"}"#,
+                "\n",
+            )
+        );
+    }
+
+    #[test]
+    fn merge_jsonl_rejects_a_malformed_line_in_any_input() {
+        let valid = concat!(
+            r#"{"id":"ab-valid","updated_at":"2026-08-13T10:00:01Z"}"#,
+            "\n",
+        );
+        let malformed = "{not json}\n";
+
+        assert!(merge_jsonl(malformed, valid, valid).is_err());
+        assert!(merge_jsonl(valid, malformed, valid).is_err());
+        assert!(merge_jsonl(valid, valid, malformed).is_err());
+    }
 }
