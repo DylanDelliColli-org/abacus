@@ -30,6 +30,20 @@ br close <id>                 # only after the work is verified
 Never use `br edit` (opens an editor and hangs you). Update fields with
 `br update <id> --description "..."` / `--notes "..."`.
 
+## Tracker merge driver
+
+`.gitattributes` assigns `.beads/issues.jsonl` to the `beads-jsonl` merge
+driver. Git merge-driver configuration is local to each clone, so configure
+it after cloning (with `abacus` on `PATH`):
+
+```sh
+git config merge.beads-jsonl.driver 'abacus merge-jsonl %A %O %B'
+```
+
+The driver unions issue IDs from all three snapshots and keeps the complete
+line with the latest `updated_at`. If any line cannot be parsed, the driver
+exits non-zero so Git leaves a normal conflict for manual resolution.
+
 ## Lanes
 
 - A worker lane is a git worktree under `~/.herdr/worktrees/abacus/` on a
