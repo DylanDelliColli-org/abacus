@@ -52,6 +52,13 @@ pub fn classify_bead_status(status: &str) -> Result<BeadOutcome, String> {
     }
 }
 
+/// A completed bead is durable evidence that its lane can be torn down.
+/// Incomplete and never-engaged lanes stay open so their pane transcripts
+/// remain available for diagnosis.
+pub fn should_reap_lane(outcome: BeadOutcome) -> bool {
+    outcome == BeadOutcome::Completed
+}
+
 #[derive(Deserialize)]
 struct BeadState {
     status: String,
@@ -254,5 +261,12 @@ mod tests {
             classify_bead_status("open").unwrap(),
             BeadOutcome::NeverEngaged
         );
+    }
+
+    #[test]
+    fn only_a_completed_outcome_reaps_the_lane() {
+        assert!(should_reap_lane(BeadOutcome::Completed));
+        assert!(!should_reap_lane(BeadOutcome::Incomplete));
+        assert!(!should_reap_lane(BeadOutcome::NeverEngaged));
     }
 }

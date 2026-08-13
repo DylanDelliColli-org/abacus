@@ -9,7 +9,7 @@ use std::process::{Command, exit};
 
 use abacus::{
     BeadOutcome, dispatch_prompt, parse_bead_outcome, parse_ready, parse_worktree_created,
-    select_bead, version_string,
+    select_bead, should_reap_lane, version_string,
 };
 
 fn main() {
@@ -99,7 +99,23 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         &["show", &bead.id, "--json"],
         Some(Path::new(&lane.checkout_path)),
     )?;
-    match parse_bead_outcome(&bead_state)? {
+    let outcome = parse_bead_outcome(&bead_state)?;
+    if should_reap_lane(outcome) {
+        capture(
+            "herdr",
+            &[
+                "worktree",
+                "remove",
+                "--workspace",
+                &lane.workspace_id,
+                "--force",
+            ],
+            None,
+        )?;
+        println!("lane reaped: workspace {}", lane.workspace_id);
+    }
+
+    match outcome {
         BeadOutcome::Completed => {
             println!("bead {} is closed; worker completed", bead.id);
             Ok(())
