@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 
-use abacus::{dispatch_prompt, parse_ready, select_bead};
+use abacus::{BeadOutcome, dispatch_prompt, parse_bead_outcome, parse_ready, select_bead};
 
 struct TempWorkspace(PathBuf);
 
@@ -55,6 +55,13 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+fn find_on_path(program: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH must be set"))
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| panic!("{program} must be on PATH"))
+}
+
 #[test]
 fn ready_roundtrip_selects_highest_priority_bead() {
     let ws = TempWorkspace::new("roundtrip");
@@ -93,6 +100,42 @@ fn abacus_run_on_empty_backlog_dispatches_nothing_and_exits_zero() {
     assert!(stdout.contains("no ready beads"), "stdout: {stdout}");
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
+    let ws = TempWorkspace::new("claim-before-lane");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(&ws.0, &["create", "--title=claim before dispatch"]);
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let restricted_bin = ws.0.join("restricted-bin");
+    std::fs::create_dir(&restricted_bin).unwrap();
+    symlink(find_on_path("br"), restricted_bin.join("br")).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", restricted_bin)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("failed to spawn herdr"),
+        "failure must occur while opening the lane; stderr: {stderr}"
+    );
+
+    let state = br(&ws.0, &["show", &bead.id, "--json"]);
+    assert_eq!(
+        parse_bead_outcome(&state).unwrap(),
+        BeadOutcome::Incomplete,
+        "the selected bead must be claimed in the dispatching checkout"
+    );
+}
+
 #[test]
 fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
     let ws = TempWorkspace::new("notracker");
@@ -117,6 +160,13 @@ fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
     let beads = parse_ready(&json).unwrap();
     let bead = select_bead(&beads).unwrap();
 
+    let lane = ws.0.join("lane");
+    let lane_tracker = lane.join(".beads");
+    std::fs::create_dir_all(&lane_tracker).unwrap();
+    for file in ["config.yaml", "issues.jsonl", "metadata.json"] {
+        std::fs::copy(ws.0.join(".beads").join(file), lane_tracker.join(file)).unwrap();
+    }
+
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
     let fake_herdr = fake_bin.join("herdr");
@@ -126,7 +176,7 @@ fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
             "workspace": { "workspace_id": "fake-workspace" },
             "root_pane": { "pane_id": "fake-pane" },
             "worktree": {
-                "path": ws.0,
+                "path": lane,
                 "branch": format!("lane/{}", bead.id)
             }
         }

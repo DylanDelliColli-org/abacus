@@ -44,6 +44,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         println!("no ready beads in {repo_str}; nothing to dispatch");
         return Ok(());
     };
+    capture("br", &["update", &bead.id, "--claim"], Some(&repo))?;
     println!("selected {} — {}", bead.id, bead.title);
 
     let branch = format!("lane/{}", bead.id);
