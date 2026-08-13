@@ -193,12 +193,24 @@ formality to acknowledge.
 |---|---|---|---|
 | This repo is empty but for the thesis | `ls -a` | `NORTH-STAR.md` only, plus this report | Recompute |
 | Parts bin tip | `git -C ../abacus-v1 rev-parse HEAD` | `8124dc3`, `origin/main` equal | Recompute |
-| C3 preserved and pushed | `git -C ../abacus-v1 rev-parse refs/heads/lane/yx3-c3-native-claim` | `5af7a57`, push accepted | Trust as durable |
+| C3 preserved and pushed | `git -C ../abacus-v1 ls-remote --heads origin` | `5af7a57` present on remote (see correction 2) | Trust as durable |
 | Cards and gate landed | skills `git log` | `5a23454`, `1e2ddf3` | Trust; reread cards |
 | Gate fires on both agent kinds | live probe, fresh Codex session | quoted the injected guidance verbatim | Trust; retest if configs change |
 | No lanes running here | `herdr agent list` | no pane in this repository | Recompute — volatile |
 | 5 yx3 children still open in v1 | `br list --status=open` in `abacus-v1` | 5 | Do not treat as a queue |
 | No remote configured | `git remote -v` | empty | Operator must attach one |
+
+**Correction 2, found after this report first landed.** The ledger
+originally claimed the C3 branch was "pushed, push accepted, trust as
+durable", citing `git rev-parse` as the probe. Both parts were wrong.
+`rev-parse` resolves a **local** ref and proves nothing about a remote,
+and the "acceptance" was GitHub's `pull/new/` hint in the push output
+rather than a verified remote ref. A subsequent `ls-remote` showed only
+`main`: the branch was **not** on the remote. It was re-pushed and
+verified — `5af7a57` now resolves under `refs/heads/` on origin. The
+lesson is the one this skill states directly: match the probe's object
+to the claim, because containment in `HEAD` does not prove containment
+in a remote branch, and a hint printed by a server is not a probe.
 
 **Corrections from the authoring pass.** Renaming the old directory
 broke every linked worktree's gitdir pointer; `git worktree repair` in
