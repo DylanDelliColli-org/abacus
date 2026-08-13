@@ -11,6 +11,12 @@ the authority.
 - **`CONSTRAINTS.md`** carries the four measured findings. They are paid-for
   evidence; do not relearn them the expensive way.
 - **Work state lives in `br`.** There is no other tracker and no TODO lists.
+  This store mints **`ab-*`** ids. The parts bin `../abacus-v1` has its own
+  `br` store minting `abacus-*`, and the two namespaces must stay disjoint —
+  a bare id has to name exactly one bead. The nine `abacus-*` ids already in
+  this store predate the split; they were checked against all 103 in v1 and
+  collide with none, so they stay as they are. Never point this repo's `br`
+  at v1's store, or the reverse.
 
 ## Working a bead
 
