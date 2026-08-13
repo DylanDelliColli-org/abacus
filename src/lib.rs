@@ -4,6 +4,11 @@
 
 use serde::Deserialize;
 
+/// The crate version embedded by Cargo at compile time.
+pub fn version_string() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// One issue as emitted by `br ready --json` (an array of these).
 /// Only the fields the engine acts on are modeled; br's schema carries more.
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +92,11 @@ pub fn dispatch_prompt(bead_id: &str, branch: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_string_matches_cargo_package_version() {
+        assert_eq!(version_string(), env!("CARGO_PKG_VERSION"));
+    }
 
     // Captured live from `br ready --json` in this repository, 2026-08-13.
     const BR_READY_FIXTURE: &str = r#"[
