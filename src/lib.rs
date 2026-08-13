@@ -59,6 +59,15 @@ pub fn should_reap_lane(outcome: BeadOutcome) -> bool {
     outcome == BeadOutcome::Completed
 }
 
+/// Whether a failed `herdr agent prompt --wait` is the observed startup race:
+/// the prompt reached the terminal before the agent TUI attached and Herdr
+/// saw an idle agent with no state transition.
+pub fn is_agent_prompt_stalled(error: &str) -> bool {
+    error.contains("agent_prompt_stalled")
+        || (error.contains("agent prompt produced no observed state change")
+            && error.contains("status is idle"))
+}
+
 #[derive(Deserialize)]
 struct BeadState {
     status: String,
@@ -268,5 +277,16 @@ mod tests {
         assert!(should_reap_lane(BeadOutcome::Completed));
         assert!(!should_reap_lane(BeadOutcome::Incomplete));
         assert!(!should_reap_lane(BeadOutcome::NeverEngaged));
+    }
+
+    #[test]
+    fn detects_the_captured_agent_prompt_stall() {
+        let captured = "agent prompt produced no observed state change within 5000 ms; \
+                        status is idle and state_change_seq remained 1578.";
+
+        assert!(is_agent_prompt_stalled(captured));
+        assert!(!is_agent_prompt_stalled(
+            "agent prompt failed because the agent does not exist"
+        ));
     }
 }
