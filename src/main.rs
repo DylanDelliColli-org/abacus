@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
 use abacus::{
-    BeadOutcome, dispatch_prompt, parse_bead_outcome, parse_ready, parse_worktree_created,
-    select_bead, should_reap_lane, version_string,
+    BeadOutcome, dispatch_prompt, is_agent_prompt_stalled, parse_bead_outcome, parse_ready,
+    parse_worktree_created, select_bead, should_reap_lane, version_string,
 };
 
 fn main() {
@@ -178,11 +178,15 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let settled = capture(
-        "herdr",
-        &["agent", "prompt", &bead.id, &prompt, "--wait"],
-        None,
-    )?;
+    let prompt_args = ["agent", "prompt", &bead.id, &prompt, "--wait"];
+    let settled = match capture("herdr", &prompt_args, None) {
+        Ok(settled) => settled,
+        Err(error) if is_agent_prompt_stalled(&error) => {
+            eprintln!("agent prompt stalled during worker startup; retrying once");
+            capture("herdr", &prompt_args, None)?
+        }
+        Err(error) => return Err(error),
+    };
     println!("{}", settled.trim_end());
 
     let bead_state = capture(
