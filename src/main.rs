@@ -7,7 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
-use abacus::{dispatch_prompt, parse_ready, parse_worktree_created, select_bead, version_string};
+use abacus::{
+    BeadOutcome, dispatch_prompt, parse_bead_outcome, parse_ready, parse_worktree_created,
+    select_bead, version_string,
+};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -90,7 +93,23 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         None,
     )?;
     println!("{}", settled.trim_end());
-    Ok(())
+
+    let bead_state = capture(
+        "br",
+        &["show", &bead.id, "--json"],
+        Some(Path::new(&lane.checkout_path)),
+    )?;
+    match parse_bead_outcome(&bead_state)? {
+        BeadOutcome::Completed => {
+            println!("bead {} is closed; worker completed", bead.id);
+            Ok(())
+        }
+        BeadOutcome::Incomplete => Err(format!(
+            "bead {} is in_progress; worker engaged but the run is incomplete",
+            bead.id
+        )),
+        BeadOutcome::NeverEngaged => Err(format!("bead {} is open; worker never engaged", bead.id)),
+    }
 }
 
 /// Run a command, capture stdout; a non-zero exit becomes an error carrying
