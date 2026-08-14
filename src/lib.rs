@@ -92,6 +92,12 @@ pub fn is_agent_prompt_stalled(error: &str) -> bool {
             && error.contains("status is idle"))
 }
 
+/// Whether `herdr worktree remove` refused a dirty checkout that may be
+/// retried explicitly with `--force`.
+pub fn is_dirty_worktree_remove_error(error: &str) -> bool {
+    error.contains("dirty_worktree_requires_force")
+}
+
 #[derive(Deserialize)]
 struct BeadState {
     status: String,
@@ -352,6 +358,16 @@ mod tests {
         assert!(is_agent_prompt_stalled(captured));
         assert!(!is_agent_prompt_stalled(
             "agent prompt failed because the agent does not exist"
+        ));
+    }
+
+    #[test]
+    fn detects_the_captured_dirty_worktree_removal_error() {
+        let captured = r#"{"id":"cli:worktree:remove","error":{"code":"dirty_worktree_requires_force","message":"worktree contains modified or untracked files; use --force to delete it"}}"#;
+
+        assert!(is_dirty_worktree_remove_error(captured));
+        assert!(!is_dirty_worktree_remove_error(
+            r#"{"id":"cli:worktree:remove","error":{"code":"worktree_remove_failed","message":"git worktree remove failed"}}"#
         ));
     }
 }

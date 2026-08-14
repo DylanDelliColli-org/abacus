@@ -327,7 +327,7 @@ fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_reaps_a_lane_after_the_worker_closes_its_bead() {
+fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead() {
     let ws = TempWorkspace::new("closed-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker completes"]);
@@ -390,10 +390,115 @@ fn abacus_run_reaps_a_lane_after_the_worker_closes_its_bead() {
         String::from_utf8_lossy(&out.stderr)
     );
     let calls = std::fs::read_to_string(calls).unwrap();
+    let removal_calls: Vec<_> = calls
+        .lines()
+        .filter(|call| call.starts_with("worktree remove"))
+        .collect();
+    assert_eq!(
+        removal_calls,
+        ["worktree remove --workspace completed-workspace"],
+        "Herdr calls:\n{calls}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
+    let ws = TempWorkspace::new("dirty-completed-outcome");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(&ws.0, &["create", "--title=dirty worker completes"]);
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let calls = ws.0.join("herdr-calls");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "dirty-workspace" },
+            "root_pane": { "pane_id": "dirty-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    let dirty_error = serde_json::json!({
+        "id": "cli:worktree:remove",
+        "error": {
+            "code": "dirty_worktree_requires_force",
+            "message": "worktree contains modified or untracked files; use --force to delete it"
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               cd '{}'\n\
+               br update '{}' --claim\n\
+               br close '{}'\n\
+             elif [ \"$1 $2\" = \"worktree remove\" ] && [ \"$5\" != \"--force\" ]; then\n\
+               printf '%s\\n' '{}' >&2\n\
+               exit 1\n\
+             fi\n",
+            calls.display(),
+            lane_json,
+            ws.0.display(),
+            bead.id,
+            bead.id,
+            dirty_error,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
     assert!(
-        calls
-            .lines()
-            .any(|call| call == "worktree remove --workspace completed-workspace --force"),
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("WARNING"), "stderr: {stderr}");
+    assert!(stderr.contains("dirty-workspace"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("completed lane left uncommitted changes"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("protocol violation worth investigating"),
+        "stderr: {stderr}"
+    );
+
+    let calls = std::fs::read_to_string(calls).unwrap();
+    let removal_calls: Vec<_> = calls
+        .lines()
+        .filter(|call| call.starts_with("worktree remove"))
+        .collect();
+    assert_eq!(
+        removal_calls,
+        [
+            "worktree remove --workspace dirty-workspace",
+            "worktree remove --workspace dirty-workspace --force",
+        ],
         "Herdr calls:\n{calls}"
     );
 }
