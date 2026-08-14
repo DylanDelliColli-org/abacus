@@ -202,10 +202,17 @@ Each waits for its observed failure or measured need.
      landed in the beads, the epic, and any RECORD output; the file itself
      is **deleted** — git history is the archive. The `docs/planning/`
      directory concept is retired.
-  2. **RECORD is conditional.** A full-tier run produces an ADR (or rarely
-     a PRD) only when it locked a durable decision or requirement someone
-     will need to consult later; otherwise no record is produced. The
-     review gate still runs whenever a record is produced.
+  2. **RECORD is artifact-conditional.** The RECORD substage and its
+     operator gate remain fixed — all six substages always run. What is
+     conditional is the durable document: a full-tier run produces an ADR
+     (or rarely a PRD) only when it locked a durable decision or
+     requirement someone will need to consult later; otherwise no document
+     is produced and RECORD's deliverable is its section of the in-flight
+     record, committed at the gate like every other substage's.
+     DECOMPOSITION derives the backlog from the **approved planning
+     state** — the ADR or PRD when one exists, otherwise the gated
+     sections of the in-flight record — never from conversation memory.
+     The design-document review gate runs whenever a document is produced.
   3. **The quick-tier test-spec method** absorbs, inline, the discipline
      that caught two missed cases in the 2026-08-14 flow comparison: grep
      the existing test surface first and bias to extending named existing
@@ -225,4 +232,8 @@ Each waits for its observed failure or measured need.
   avoids. Amendment made on explicit operator direction. Bloat review of
   this amendment (fresh Codex context): three cuts proposed, all three
   applied by operator disposition — the history pointer row, the no-record
-  receipt, and the doc-meta provenance clause.
+  receipt, and the doc-meta provenance clause. Spec validation (second
+  fresh Codex context): one High finding — the cut receipt left the
+  no-record path with no unambiguous gate or DECOMPOSITION source —
+  resolved by operator decision as artifact-conditional RECORD, stated in
+  item 2 above.
