@@ -362,7 +362,7 @@ fn abacus_without_a_command_prints_usage() {
 }
 
 #[test]
-fn dispatch_protocol_pushes_the_closed_bead_and_leaves_the_lane_clean() {
+fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
     let ws = TempWorkspace::new("closed-push");
     let origin = ws.0.join("origin.git");
     let lane = ws.0.join("lane");
@@ -382,9 +382,23 @@ fn dispatch_protocol_pushes_the_closed_bead_and_leaves_the_lane_clean() {
     let stage = prompt.find("git add .beads").unwrap();
     let commit = prompt.find("commit all work").unwrap();
     let push = prompt.find("git push -u origin lane/it-work").unwrap();
+    let pr = prompt.find("gh pr create --base main").unwrap();
     assert!(
-        close < stage && stage < commit && commit < push,
+        close < stage && stage < commit && commit < push && push < pr,
         "dispatch protocol is out of order: {prompt}"
+    );
+    assert!(
+        prompt.contains(&format!("title containing `{bead_id}`")),
+        "prompt: {prompt}"
+    );
+    assert!(prompt.contains("suite results"), "prompt: {prompt}");
+    assert!(
+        prompt.contains("red-first confirmation"),
+        "prompt: {prompt}"
+    );
+    assert!(
+        prompt.contains("treat that existing PR as success"),
+        "prompt: {prompt}"
     );
 
     git(&lane, &["add", ".beads"]);
