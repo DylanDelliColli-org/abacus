@@ -21,6 +21,9 @@ fn main() {
         Some("--version") | Some("-V") => {
             println!("abacus {}", version_string());
         }
+        Some("--help") | Some("-h") => {
+            println!("{}", usage());
+        }
         Some("run") => {
             let repo = args.get(1).map(PathBuf::from).unwrap_or_else(|| ".".into());
             if let Err(e) = cmd_run(&repo) {
@@ -45,8 +48,12 @@ fn main() {
     }
 }
 
+fn usage() -> &'static str {
+    "usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>"
+}
+
 fn print_usage() {
-    eprintln!("usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>");
+    eprintln!("{}", usage());
 }
 
 #[derive(serde::Deserialize)]
@@ -290,6 +297,11 @@ fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_text_describes_the_run_command() {
+        assert!(usage().contains("abacus run"));
+    }
 
     #[test]
     fn merge_jsonl_uses_the_line_with_the_latest_updated_at() {

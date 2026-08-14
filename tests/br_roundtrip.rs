@@ -648,6 +648,27 @@ fn abacus_without_a_command_prints_usage() {
     let out = Command::new(env!("CARGO_BIN_EXE_abacus")).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("usage"));
+
+    for flag in ["--help", "-h"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{flag} exited with {}", out.status);
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("abacus run"),
+            "{flag} stdout: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(out.stderr.is_empty(), "{flag} wrote to stderr");
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .arg("bogus")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage"));
 }
 
 #[test]
