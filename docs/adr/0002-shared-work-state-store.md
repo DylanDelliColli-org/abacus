@@ -13,7 +13,12 @@ lifecycle: active
   close-last worker protocol so a closed bead implies a reviewable PR,
   per-command BEADS_DIR binding because worker shell invocations do not
   share exports, and the concurrency evidence narrowed to its measured
-  read-side); pending final operator approval
+  read-side); carriage mechanism debate validated by a third fresh Codex
+  context with empirical fixtures (symlink swap rejected — the lane is
+  git-dirty by construction; the PATH wrapper validated with all engine
+  call sites confirmed interceptable; upstream discovery confirmed
+  nonexistent in br 0.1.45), operator selected the wrapper with the
+  per-command binding as fallback; pending final operator approval
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis ("teams of provider-agnostic agents
@@ -47,12 +52,19 @@ moving main will collide again.
 Every worker lane uses the **main checkout's `br` store** directly. Lane
 branches never touch `.beads`.
 
-- **Carriage:** every `br` command the dispatch prompt issues carries the
-  binding inline — `BEADS_DIR=<main-checkout>/.beads br …` — because a
-  worker's shell invocations are independent and an exported variable in
-  one does not reach the next. Prompt carriage, the same mechanism that
-  already carries the bead identity (CONSTRAINTS.md finding 3), but bound
-  per command, never per session.
+- **Carriage:** a **PATH-precedent `br` wrapper** installed once on the
+  operator's machine. When invoked from a linked worktree it resolves the
+  main checkout through git's common-dir metadata and executes the real
+  `br` with `BEADS_DIR` set; anywhere else it passes through untouched.
+  Plain `br` commands then bind to the shared store for workers, the
+  engine, and the operator alike — every current call site resolves
+  through PATH, verified live. Two recorded boundaries: a call that
+  bypasses PATH (absolute path to the real binary) rediscovers the lane
+  store, and a machine without the wrapper falls back to the per-command
+  inline binding `BEADS_DIR=<main-checkout>/.beads br …` (session exports
+  do not survive a worker's independent shell invocations). Worktree-aware
+  discovery native to `br` is the eventual upstream fix; until it ships,
+  the wrapper is the mechanism.
 - **Worker protocol:** claim and close run against the shared store. The
   `git add .beads` step is removed; a lane commits only source and test
   changes. The close is the worker's **last act, after the push succeeds
