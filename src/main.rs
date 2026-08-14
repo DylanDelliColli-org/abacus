@@ -7,11 +7,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
+use std::time::Instant;
 
 use abacus::{
-    BeadOutcome, dispatch_prompt, is_agent_prompt_stalled, is_dirty_worktree_remove_error,
-    parse_bead_outcome, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
-    should_reap_lane, version_string,
+    BeadOutcome, OPERATOR_SEAT_LABEL, dispatch_prompt, format_lane_duration,
+    is_agent_prompt_stalled, is_dirty_worktree_remove_error, parse_bead_outcome, parse_ready,
+    parse_worktree_created, sanitize_agent_name, select_bead, should_reap_lane, version_string,
 };
 
 fn main() {
@@ -19,6 +20,9 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("--version") | Some("-V") => {
             println!("abacus {}", version_string());
+        }
+        Some("--help") | Some("-h") => {
+            println!("{}", usage());
         }
         Some("run") => {
             let repo = args.get(1).map(PathBuf::from).unwrap_or_else(|| ".".into());
@@ -44,8 +48,12 @@ fn main() {
     }
 }
 
+fn usage() -> &'static str {
+    "usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>"
+}
+
 fn print_usage() {
-    eprintln!("usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>");
+    eprintln!("{}", usage());
 }
 
 #[derive(serde::Deserialize)]
@@ -130,7 +138,22 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     let repo_str = repo.to_string_lossy().into_owned();
 
     let ready = capture("br", &["ready", "--json"], Some(&repo))?;
-    let beads = parse_ready(&ready)?;
+    let mut beads = parse_ready(&ready)?;
+    let operator_ready = capture(
+        "br",
+        &["ready", "--label", OPERATOR_SEAT_LABEL, "--json"],
+        Some(&repo),
+    )?;
+    let operator_beads = parse_ready(&operator_ready)?;
+    for bead in &mut beads {
+        let has_operator_label = bead.labels.iter().any(|label| label == OPERATOR_SEAT_LABEL);
+        let is_operator_ready = operator_beads
+            .iter()
+            .any(|operator_bead| operator_bead.id == bead.id);
+        if is_operator_ready && !has_operator_label {
+            bead.labels.push(OPERATOR_SEAT_LABEL.to_owned());
+        }
+    }
     let Some(bead) = select_bead(&beads) else {
         println!("no ready beads in {repo_str}; nothing to dispatch");
         return Ok(());
@@ -140,101 +163,112 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
 
     let agent_name = sanitize_agent_name(&bead.id);
     let branch = format!("lane/{}", bead.id);
-    let created = capture(
-        "herdr",
-        &[
-            "worktree",
-            "create",
-            "--cwd",
-            &repo_str,
-            "--branch",
-            &branch,
-            "--label",
-            &bead.id,
-            "--no-focus",
-        ],
-        None,
-    )?;
-    let lane = parse_worktree_created(&created)?;
-    println!(
-        "lane open: workspace {} pane {} at {}",
-        lane.workspace_id, lane.pane_id, lane.checkout_path
-    );
+    let lane_started = Instant::now();
+    let lane_result = (|| -> Result<(), String> {
+        let created = capture(
+            "herdr",
+            &[
+                "worktree",
+                "create",
+                "--cwd",
+                &repo_str,
+                "--branch",
+                &branch,
+                "--label",
+                &bead.id,
+                "--no-focus",
+            ],
+            None,
+        )?;
+        let lane = parse_worktree_created(&created)?;
+        println!(
+            "lane open: workspace {} pane {} at {}",
+            lane.workspace_id, lane.pane_id, lane.checkout_path
+        );
 
-    capture(
-        "herdr",
-        &[
-            "agent",
-            "start",
-            &agent_name,
-            "--kind",
-            "codex",
-            "--pane",
-            &lane.pane_id,
-        ],
-        None,
-    )?;
-    println!("codex worker started as agent {agent_name}");
+        capture(
+            "herdr",
+            &[
+                "agent",
+                "start",
+                &agent_name,
+                "--kind",
+                "codex",
+                "--pane",
+                &lane.pane_id,
+            ],
+            None,
+        )?;
+        println!("codex worker started as agent {agent_name}");
 
-    let prompt = dispatch_prompt(&bead.id, &lane.branch);
-    println!(
-        "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
-    );
-    let prompt_args = ["agent", "prompt", &agent_name, &prompt, "--wait"];
-    let settled = match capture("herdr", &prompt_args, None) {
-        Ok(settled) => settled,
-        Err(error) if is_agent_prompt_stalled(&error) => {
-            eprintln!("agent prompt stalled during worker startup; retrying once");
-            capture("herdr", &prompt_args, None)?
-        }
-        Err(error) => return Err(error),
-    };
-    println!("{}", settled.trim_end());
-
-    let bead_state = capture(
-        "br",
-        &["show", &bead.id, "--json"],
-        Some(Path::new(&lane.checkout_path)),
-    )?;
-    let outcome = parse_bead_outcome(&bead_state)?;
-    if should_reap_lane(outcome) {
-        let remove_args = ["worktree", "remove", "--workspace", &lane.workspace_id];
-        match capture("herdr", &remove_args, None) {
-            Ok(_) => {}
-            Err(error) if is_dirty_worktree_remove_error(&error) => {
-                eprintln!(
-                    "WARNING: completed lane left uncommitted changes in workspace {}; \
-                     forcing removal. This is a protocol violation worth investigating.",
-                    lane.workspace_id
-                );
-                capture(
-                    "herdr",
-                    &[
-                        "worktree",
-                        "remove",
-                        "--workspace",
-                        &lane.workspace_id,
-                        "--force",
-                    ],
-                    None,
-                )?;
+        let prompt = dispatch_prompt(&bead.id, &lane.branch);
+        println!(
+            "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
+        );
+        let prompt_args = ["agent", "prompt", &agent_name, &prompt, "--wait"];
+        let settled = match capture("herdr", &prompt_args, None) {
+            Ok(settled) => settled,
+            Err(error) if is_agent_prompt_stalled(&error) => {
+                eprintln!("agent prompt stalled during worker startup; retrying once");
+                capture("herdr", &prompt_args, None)?
             }
             Err(error) => return Err(error),
-        }
-        println!("lane reaped: workspace {}", lane.workspace_id);
-    }
+        };
+        println!("{}", settled.trim_end());
 
-    match outcome {
-        BeadOutcome::Completed => {
-            println!("bead {} is closed; worker completed", bead.id);
-            Ok(())
+        let bead_state = capture(
+            "br",
+            &["show", &bead.id, "--json"],
+            Some(Path::new(&lane.checkout_path)),
+        )?;
+        let outcome = parse_bead_outcome(&bead_state)?;
+        if should_reap_lane(outcome) {
+            let remove_args = ["worktree", "remove", "--workspace", &lane.workspace_id];
+            match capture("herdr", &remove_args, None) {
+                Ok(_) => {}
+                Err(error) if is_dirty_worktree_remove_error(&error) => {
+                    eprintln!(
+                        "WARNING: completed lane left uncommitted changes in workspace {}; \
+                         forcing removal. This is a protocol violation worth investigating.",
+                        lane.workspace_id
+                    );
+                    capture(
+                        "herdr",
+                        &[
+                            "worktree",
+                            "remove",
+                            "--workspace",
+                            &lane.workspace_id,
+                            "--force",
+                        ],
+                        None,
+                    )?;
+                }
+                Err(error) => return Err(error),
+            }
+            println!("lane reaped: workspace {}", lane.workspace_id);
         }
-        BeadOutcome::Incomplete => Err(format!(
-            "bead {} is in_progress; worker engaged but the run is incomplete",
-            bead.id
-        )),
-        BeadOutcome::NeverEngaged => Err(format!("bead {} is open; worker never engaged", bead.id)),
-    }
+
+        match outcome {
+            BeadOutcome::Completed => {
+                let duration = format_lane_duration(lane_started.elapsed().as_secs());
+                println!("bead {} is closed; worker completed in {duration}", bead.id);
+                Ok(())
+            }
+            BeadOutcome::Incomplete => Err(format!(
+                "bead {} is in_progress; worker engaged but the run is incomplete",
+                bead.id
+            )),
+            BeadOutcome::NeverEngaged => {
+                Err(format!("bead {} is open; worker never engaged", bead.id))
+            }
+        }
+    })();
+
+    lane_result.map_err(|error| {
+        let duration = format_lane_duration(lane_started.elapsed().as_secs());
+        format!("{error} after {duration}")
+    })
 }
 
 /// Run a command, capture stdout; a non-zero exit becomes an error carrying
@@ -263,6 +297,11 @@ fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_text_describes_the_run_command() {
+        assert!(usage().contains("abacus run"));
+    }
 
     #[test]
     fn merge_jsonl_uses_the_line_with_the_latest_updated_at() {

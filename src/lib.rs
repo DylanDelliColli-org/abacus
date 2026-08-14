@@ -4,9 +4,20 @@
 
 use serde::Deserialize;
 
+pub const OPERATOR_SEAT_LABEL: &str = "seat:operator";
+
 /// The crate version embedded by Cargo at compile time.
 pub fn version_string() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// Format a lane's elapsed wall-clock seconds for compact outcome messages.
+pub fn format_lane_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
 }
 
 /// One issue as emitted by `br ready --json` (an array of these).
@@ -17,6 +28,8 @@ pub struct ReadyBead {
     pub title: String,
     #[serde(default = "default_priority")]
     pub priority: i64,
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 fn default_priority() -> i64 {
@@ -30,7 +43,10 @@ pub fn parse_ready(json: &str) -> Result<Vec<ReadyBead>, String> {
 /// Lowest priority number wins (br convention: 0 is most urgent).
 /// Ties keep br's own output order.
 pub fn select_bead(beads: &[ReadyBead]) -> Option<&ReadyBead> {
-    beads.iter().min_by_key(|b| b.priority)
+    beads
+        .iter()
+        .filter(|bead| !bead.labels.iter().any(|label| label == OPERATOR_SEAT_LABEL))
+        .min_by_key(|bead| bead.priority)
 }
 
 /// Convert a bead id into Herdr's display-name grammar:
@@ -186,6 +202,13 @@ mod tests {
         assert_eq!(version_string(), env!("CARGO_PKG_VERSION"));
     }
 
+    #[test]
+    fn lane_duration_formats_seconds_and_zero_padded_minutes() {
+        assert_eq!(format_lane_duration(0), "0s");
+        assert_eq!(format_lane_duration(42), "42s");
+        assert_eq!(format_lane_duration(4 * 60 + 7), "4m07s");
+    }
+
     // Captured live from `br ready --json` in this repository, 2026-08-13.
     const BR_READY_FIXTURE: &str = r#"[
       {
@@ -238,6 +261,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(select_bead(&beads).unwrap().id, "abacus-bbb");
+    }
+
+    #[test]
+    fn selection_skips_operator_seat_beads() {
+        let beads = parse_ready(
+            r#"[
+              {"id":"abacus-operator","title":"operator milestone","priority":0,"labels":["seat:operator"]},
+              {"id":"abacus-worker","title":"worker task","priority":1}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(select_bead(&beads).unwrap().id, "abacus-worker");
+        assert!(select_bead(&beads[..1]).is_none());
     }
 
     #[test]
