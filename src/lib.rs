@@ -370,7 +370,10 @@ mod tests {
         let push = p.find("git push -u origin lane/abacus-v8s").unwrap();
         let pr = p.find("gh pr create --base main").unwrap();
         assert!(push < pr, "push must happen before PR creation: {p}");
-        assert!(pr < close, "close must be the final act after the PR exists: {p}");
+        assert!(
+            pr < close,
+            "close must be the final act after the PR exists: {p}"
+        );
     }
 
     #[test]

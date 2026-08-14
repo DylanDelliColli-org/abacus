@@ -647,6 +647,158 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker() {
+    let ws = TempWorkspace::new("never-engaged-retry-recovers");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker survives lost startup prompt"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let prompt_attempts = ws.0.join("prompt-attempts");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "never-engaged-retry-workspace" },
+            "root_pane": { "pane_id": "never-engaged-retry-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'attempt\\n' >> '{}'\n\
+               cd '{}'\n\
+               if [ \"$(wc -l < '{}')\" -eq 1 ]; then\n\
+                 br update '{}' --status open\n\
+               else\n\
+                 br close '{}'\n\
+               fi\n\
+             fi\n",
+            lane_json,
+            prompt_attempts.display(),
+            ws.0.display(),
+            prompt_attempts.display(),
+            bead.id,
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(prompt_attempts).unwrap(),
+        "attempt\nattempt\n"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_run_stops_after_a_second_never_engaged_outcome() {
+    let ws = TempWorkspace::new("never-engaged-retry-exhausted");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker loses both startup prompts"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let prompt_attempts = ws.0.join("prompt-attempts");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "never-engaged-failure-workspace" },
+            "root_pane": { "pane_id": "never-engaged-failure-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'attempt\\n' >> '{}'\n\
+               cd '{}'\n\
+               br update '{}' --status open\n\
+             fi\n",
+            lane_json,
+            prompt_attempts.display(),
+            ws.0.display(),
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("never engaged"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(prompt_attempts).unwrap(),
+        "attempt\nattempt\n"
+    );
+}
+
 #[test]
 fn abacus_without_a_command_prints_usage() {
     let out = Command::new(env!("CARGO_BIN_EXE_abacus")).output().unwrap();
