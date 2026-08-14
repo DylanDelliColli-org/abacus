@@ -169,28 +169,31 @@ unit and integration delta. Bias toward extending existing tests. Put
 integration coverage at real seams where two systems meet, not on every story.
 
 For every proposed addition, record the test layer, intended assertion, whether
-it extends an existing test, and its estimated runtime cost. Sum those estimates
-against the remaining `FULL_SUITE_WALL_CLOCK_BUDGET_SECONDS` budget. If the
+it extends an existing test, and its estimated runtime cost. Compute the
+remaining budget by timing the suite that already exists — remaining equals
+`FULL_SUITE_WALL_CLOCK_BUDGET_SECONDS` minus the current measured full-suite
+duration; only tests that do not yet exist are estimated. Sum the estimates
+against that remaining budget. If the
 budget is threatened, choose the tests with the greatest unique confidence
 rather than silently increasing the budget.
 
 Use measured durations only after implementation. In periodic test-cost audits,
 rank measured duration against unique coverage contributed and propose pruning.
-Protect against these three coverage-loss tripwires during DECOMPOSITION:
-
-- cases folded together until distinct behavior is no longer proved;
-- tests deleted while their production behavior remains live; and
-- assertions thinned inside surviving test names.
 
 Write `test-strategy.md`, commit it, and obtain operator approval before RECORD.
 
 ### RECORD
 
 Create an ADR in the common case or a PRD in the rare case where product
-requirements, rather than a design decision, are the durable authority. Put the
-record under `docs/` and make it cite the approved framing, research, locked
-architecture, and test contract. Let the configured design-document review run;
-resolve its bloat-review and specification-validation findings before the gate.
+requirements, rather than a design decision, are the durable authority. Path
+placement is load-bearing: the design-document review gate triggers only on
+files under `docs/adr/` or filenames carrying `adr`, `prd`, or a `proposal`
+prefix. Put an ADR in `docs/adr/`; give a PRD a filename containing `prd`. A
+record elsewhere under `docs/` silently skips the gate. Make the record cite
+the approved framing, research, locked architecture, and test contract. Let
+the design-document review run; resolve its bloat-review and
+specification-validation findings before the gate — their absence means the
+gate did not fire, not that the record passed.
 
 Write `record.md` with the durable record's path, why ADR or PRD was selected,
 its review evidence, and its final decision summary. Commit both files and
@@ -228,13 +231,20 @@ member, for example as the same `br` label. Keep unrelated footprints separate.
 After creating the children, inspect `br dep tree <epic-id>`, `br ready`, and
 `br lint`. Confirm that dependency direction matches requirement language,
 intentionally blocked work is not ready, all footprints are final, and each
-surviving group has a consistent tag. Have the freshness producer review the
-beads without relying on planning conversation.
+surviving group has a consistent tag. Check every child's test spec against
+the three coverage-loss tripwires:
+
+- cases folded together until distinct behavior is no longer proved;
+- tests deleted while their production behavior remains live; and
+- assertions thinned inside surviving test names.
+
+Have the freshness producer review the beads without relying on planning
+conversation.
 
 Write `decomposition.md` with child IDs and titles, story traceability, final
 footprints, dependency and ready-state checks, retained group tags, dropped
-candidate groups, and the freshness verdict. Commit it and obtain the final
-operator approval.
+candidate groups, the tripwire verdict, and the freshness verdict. Commit it
+and obtain the final operator approval.
 
 ## Open questions — both tiers
 
@@ -263,6 +273,9 @@ Do not launch execution as an implicit planning step.
 Judge the planning flow by its own success bar: a planning run succeeds only
 when the backlog handed to `abacus run` drains with **zero open questions at
 handoff** and **zero worker lanes stopping for missing scope or an operator
-answer**. Record both observations after the drain. FRAMING's epic success
-metric measures the product outcome; this success bar measures the planning
-flow, and neither substitutes for the other.
+answer**. After the drain, record both observations as `br` notes on the
+epic — the drain may finish in a different session than the one that planned,
+and the epic's tracker record is the artifact the promotion-with-evidence
+path cites. FRAMING's epic success metric measures the product outcome; this
+success bar measures the planning flow, and neither substitutes for the
+other.
