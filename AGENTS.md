@@ -54,6 +54,10 @@ exits non-zero so Git leaves a normal conflict for manual resolution.
 - Commit and self-push your lane branch: `git push -u origin lane/<bead-id>`.
 - **Autonomy ends at the PR.** Never merge to `main`; the operator reviews
   at the merge boundary.
+- **Read-only review dispatches** (bloat review, spec validation) must state
+  in the prompt that the review is not bead-tracked work — no beads, no
+  branches, no commits. A reviewer that follows the prime directive without
+  this line leaves tracker and remote exhaust.
 
 ## If you are lost
 
