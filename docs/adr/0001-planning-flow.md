@@ -2,8 +2,12 @@
 
 - **Status:** draft — bloat review complete (six cuts proposed by a fresh
   Codex context; operator applied one — producer mandates softened to
-  defaults — and reaffirmed five); pending spec validation and final
-  operator approval
+  defaults — and reaffirmed five); spec validation complete (five anchored
+  findings from a second fresh Codex context, all applied as clarifications:
+  flow-level success bar defined, quick-tier classifier restored,
+  open-questions rule scoped to both tiers, research outputs marked
+  provisional with re-derivation at DECOMPOSITION, budget pricing marked as
+  estimates); pending final operator approval
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis as amended 2026-08-14 ("a
@@ -39,9 +43,12 @@ and not before.
 
 ### 2. The flow: two tiers, six substages
 
-Tier sizing survives from `sable-plan` unchanged: the skill proposes
-**quick** (small, well-specified, roughly 1–3 beads, one consolidated
-approval) or **full**, and the operator confirms.
+Tier sizing survives from `sable-plan` unchanged, including its classifier:
+**quick** requires a well-specified ask with no unknowns to research, no new
+interface or contract, and a bounded blast radius (roughly 1–3 beads, one
+consolidated approval). Anything with unknowns, architecture decisions, or a
+wide radius is **full**, and doubt defaults to full. The skill proposes a
+tier; the operator confirms.
 
 The full tier runs six gated substages — five inherited, one new. Each
 substage names a **default producer**; the substages and their deliverables
@@ -102,9 +109,11 @@ minutes. ABACUS makes test cost visible and budgeted:
 - The full suite of this repository has a wall-clock budget of **30
   seconds**, stated in the skill as a constant. Raising it requires an
   argued change, not drift.
-- At TEST-STRATEGY, every proposed test addition states its runtime cost
-  against the remaining budget. A threatened budget forces choosing, which
-  is the selectivity working as intended.
+- At TEST-STRATEGY, every proposed test addition states its **estimated**
+  runtime cost against the remaining budget — measured costs exist only once
+  the tests do, and the periodic audits below use measured durations. A
+  threatened budget forces choosing, which is the selectivity working as
+  intended.
 - Bias to extending existing tests over adding files; integration tests sit
   at real seams (where two systems meet), not on every story.
 - Periodic cost audits rank tests by duration against unique coverage
@@ -117,13 +126,20 @@ minutes. ABACUS makes test cost visible and budgeted:
 
 RESEARCH produces module fingerprints while the backlog is still small —
 retrofitting fingerprints onto a large backlog was expensive in SABLE, and
-doing it early is the fix. Because research already knows which files each
-future bead touches, it also proposes **candidate bundle groups**: small,
-footprint-overlapping beads that would block each other as separate lanes
-and should instead go to one worker as one lane and one PR.
+doing it early is the fix. Because research develops a provisional map of
+which files each future bead is likely to touch, it also proposes
+**candidate bundle groups**: small, footprint-overlapping beads that would
+block each other as separate lanes and should instead go to one worker as
+one lane and one PR.
 
-DECOMPOSITION stamps every child with its file footprint and, where
-research proposed one, a group tag. The skill records groups; the engine
+Research fingerprints and groups are **provisional**: ARCHITECTURE may
+change the design they assumed. DECOMPOSITION re-derives every child's final
+file footprint from the locked architecture, applies a group tag only where
+the candidate grouping survives that re-derivation, and drops stale
+candidates rather than stamping them.
+
+DECOMPOSITION thus stamps every child with its final footprint and, where
+one survived, a group tag. The skill records groups; the engine
 learns to dispatch them later — bundled dispatch is machinery, and machinery
 follows evidence (the two-lane stress test produces the first measurements
 of cross-lane conflict cost).
@@ -131,9 +147,20 @@ of cross-lane conflict cost).
 ### 7. Handoff
 
 A completed planning run hands off to `abacus run`. The open-questions rule
-survives from `sable-plan`: ambiguity surfaced in any substage becomes an
+survives from `sable-plan` with its original scope — **both tiers**:
+ambiguity surfaced at any point in a quick or full run becomes an
 operator-addressed question, and the flow does not hand off while open
 questions remain.
+
+### 8. The flow's success bar
+
+Per the north-star amendment, the planning flow's success bar is defined
+here and promoted into NORTH-STAR.md only with evidence. A planning run
+**succeeds** when the backlog it hands off drains through `abacus run`
+without any worker lane stopping for missing scope or an operator answer —
+zero open questions at handoff, and zero scope-starved lanes during the
+drain. FRAMING's per-epic success metric measures the epic's outcome; this
+bar measures the flow itself, and the two are not substitutes.
 
 ## Consequences
 
