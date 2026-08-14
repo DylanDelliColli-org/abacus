@@ -1,3 +1,8 @@
+```doc-meta
+role: contract
+lifecycle: active
+```
+
 # ADR 0001: The planning flow enters ABACUS as a skill
 
 - **Status:** **accepted** 2026-08-14, operator approval after both review
@@ -178,3 +183,46 @@ bar measures the flow itself, and the two are not substitutes.
 No interlock or enforcement hooks. No dossier HTML tooling. No engine
 subcommand. No producer-as-lane dispatch. No bundled dispatch in the engine.
 Each waits for its observed failure or measured need.
+
+## Amendments
+
+### 2026-08-14 — planning-state lifecycle, conditional RECORD, quick-tier method
+
+- **Prior version:** blob `ff559a000a36b662b68b215c96b852548ac82fa7`
+  (accepted text of the same date, before this amendment).
+- **What changed.** Three decisions, replacing section 2's planning-state
+  rule and part of sections 3 and 2's tier description:
+  1. **Planning state is classed by lifecycle, not location.** The quick
+     tier records its consolidated planning state on the epic bead —
+     tracker-native, committed through `.beads`, creating no files or
+     directories. The full tier keeps exactly one in-flight root record,
+     `PLANNING-<epic-id>.md`, registered under the corpus `inflight_globs`,
+     with sections appended and committed at each gate so a crashed session
+     resumes from the tree. At handoff the record's durable substance has
+     landed in the beads, the epic, and any RECORD output; the file itself
+     is **deleted**, and a pointer row naming the last-containing commit is
+     appended to `docs/history/INDEX.md`. The `docs/planning/` directory
+     concept is retired.
+  2. **RECORD is conditional.** A full-tier run produces an ADR (or rarely
+     a PRD) only when it locked a durable decision or requirement someone
+     will need to consult later. Otherwise RECORD states "no durable record
+     warranted" with the reason, in the in-flight record. The review gate
+     still runs whenever a record is produced.
+  3. **The quick-tier test-spec method** absorbs, inline, the discipline
+     that caught two missed cases in the 2026-08-14 flow comparison: grep
+     the existing test surface first and bias to extending named existing
+     tests; include negative-space cases — what must *not* appear or
+     happen; give every case concrete inputs and expected assertions,
+     never "edge case". Method only: no producer delegation is added to
+     the quick tier, and the full tier's TEST-STRATEGY producer is
+     unchanged.
+- **Evidence and rationale:** `docs-doctor` (adopted this date) fails the
+  prior structure — `docs/planning` is an unknown subdirectory under the
+  declared corpus, whose class library holds no planning location and
+  forbids unlisted ones; the operator directed adoption of that structure.
+  The head-to-head comparison with `sable-plan` on an identical ask showed
+  the taxonomy-driven test method finding a negative-space case and a
+  boundary case the inline table missed, while SABLE's gitignored planning
+  state demonstrated the crash-loss failure the committed in-flight record
+  avoids. Amendment made on explicit operator direction; the doc-meta
+  block above landed with it as part of corpus adoption.
