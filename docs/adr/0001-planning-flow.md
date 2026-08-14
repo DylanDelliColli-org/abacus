@@ -1,6 +1,9 @@
 # ADR 0001: The planning flow enters ABACUS as a skill
 
-- **Status:** draft — pending bloat review, spec validation, and operator approval
+- **Status:** draft — bloat review complete (six cuts proposed by a fresh
+  Codex context; operator applied one — producer mandates softened to
+  defaults — and reaffirmed five); pending spec validation and final
+  operator approval
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis as amended 2026-08-14 ("a
@@ -40,9 +43,12 @@ Tier sizing survives from `sable-plan` unchanged: the skill proposes
 **quick** (small, well-specified, roughly 1–3 beads, one consolidated
 approval) or **full**, and the operator confirms.
 
-The full tier runs six gated substages — five inherited, one new:
+The full tier runs six gated substages — five inherited, one new. Each
+substage names a **default producer**; the substages and their deliverables
+are the contract, and the skill may substitute any capable producer for a
+default. Only the operator gates are fixed choreography.
 
-| Substage | Owner | Deliverable |
+| Substage | Default producer | Deliverable |
 |---|---|---|
 | FRAMING | orchestrator with the operator, live | stories, non-goals, success metric, wedge, prerequisites |
 | RESEARCH | sherlock-type subagent | prior art, pitfalls, **module fingerprints, candidate bundle groups** |
