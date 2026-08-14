@@ -5,7 +5,10 @@ lifecycle: active
 
 # ADR 0002: One shared work-state store for all lanes
 
-- **Status:** draft — pending bloat review, spec validation, and operator
+- **Status:** draft — bloat review complete (fresh Codex context, three
+  cuts: operator applied the zyb-ordering sentence as a shrink and the
+  cross-machine trim, and reaffirmed committed completion records on the
+  crash-first-class constraint); pending spec validation and operator
   approval
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
@@ -57,10 +60,8 @@ branches never touch `.beads`.
 This deliberately reverses the close-before-push protocol decision (bead
 ab-zyb): the branch-carried completion record proved redundant in practice
 — the orchestrator reconciled every close into main anyway — and was the
-structural source of the conflict class. What zyb actually established
-survives: the close still happens before the push in the worker's
-sequence; only its location changes from the lane's copy to the shared
-store.
+structural source of the conflict class. With a live shared store, the
+close-versus-push ordering that zyb regulated stops mattering entirely.
 
 ## Consequences
 
@@ -72,7 +73,7 @@ store.
   clean-removal-first tripwire (bead ab-irn) signals only genuine source
   dirt.
 - The `abacus merge-jsonl` driver remains for main-line merges across
-  sessions and machines; it stops being needed per PR.
+  sessions; it stops being needed per PR.
 - Concurrent writes to one store are the proven path, not new risk:
   finding 1's measurements — 879 reads, zero timeouts, p50 51ms — were
   taken on one shared `br` store under 11 concurrent claimants.
