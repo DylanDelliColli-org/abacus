@@ -15,5 +15,5 @@ Every managed document appears here exactly once.
 | NORTH-STAR.md | product thesis, beneficiary, success condition, non-goals, and kill criteria |
 | docs/INDEX.md | authoritative map of the managed documentation corpus |
 | docs/adr/0001-planning-flow.md | accepted architecture decision for the ABACUS planning flow |
-| docs/adr/0002-shared-work-state-store.md | draft architecture decision: all lanes use one shared br store |
+| docs/adr/0002-shared-work-state-store.md | accepted architecture decision: all lanes use one shared br store |
 | docs/history/INDEX.md | archive pointer index for retired planning records |

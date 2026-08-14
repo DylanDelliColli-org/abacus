@@ -5,7 +5,8 @@ lifecycle: active
 
 # ADR 0002: One shared work-state store for all lanes
 
-- **Status:** draft — bloat review complete (fresh Codex context, three
+- **Status:** **accepted** 2026-08-14, operator approval with concurrent
+  writes measured pre-landing. Trail: bloat review complete (fresh Codex context, three
   cuts: operator applied the zyb-ordering sentence as a shrink and the
   cross-machine trim, and reaffirmed committed completion records on the
   crash-first-class constraint); spec validation complete (second fresh
@@ -18,7 +19,7 @@ lifecycle: active
   git-dirty by construction; the PATH wrapper validated with all engine
   call sites confirmed interceptable; upstream discovery confirmed
   nonexistent in br 0.1.45), operator selected the wrapper with the
-  per-command binding as fallback; pending final operator approval
+  per-command binding as fallback
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis ("teams of provider-agnostic agents
