@@ -2,18 +2,18 @@
 
 Established 2026-08-12 by operator interview (`/north-star`, establish mode).
 Amendments happen only through revise mode, never as a consequence of an
-inconvenient check.
+inconvenient check. The amendment log is at the end of this document.
 
-This document states the goal. It is not a design: `CONTEXT.md` is the
-normative product contract, `docs/adr/` holds the binding decisions, and
-`docs/migration.md` holds the build plan. Where they say something, this file
-cites them rather than restating it.
+This document states the goal. It is not a design: `docs/adr/` holds the
+binding decisions as they are made. Where a decision record says something,
+this file cites it rather than restating it.
 
 ## Thesis
 
-ABACUS is an execution engine over `br` for work state and Herdr for agent
-orchestration, letting teams of provider-agnostic agents operate autonomously
-as a software factory that clears a well-defined backlog of work.
+ABACUS is a software factory over `br` for work state and Herdr for agent
+orchestration: a human-in-the-loop planning flow turns operator intent into a
+well-defined backlog, and teams of provider-agnostic agents autonomously
+clear it.
 
 *Provider-agnostic* applies to the agents — Claude, Codex, and whatever comes
 next are swappable. `br` and Herdr are pinned substrate, not seams the engine
@@ -41,21 +41,19 @@ merge boundary.
 
 ## Non-goals
 
-Scoped to this thesis. Each may be revisited through revise mode once the
-success condition above is met; none is admissible as "future-facing" work
-before then.
+Scoped to this thesis. Each may be revisited through revise mode — an
+explicit operator act; none is admissible as "future-facing" work while it
+stands here.
 
 1. **Slack or any chat integration.** The morning's PRs are the report.
 2. **Third-party distribution** — install flows, onboarding documentation,
    cross-version compatibility for anyone who is not the operator.
-3. **Planning or backlog authoring.** The thesis consumes a *well-defined*
-   backlog; producing one is upstream of the engine.
-4. **Merging to main, or any final acceptance authority.** Excluded by the
+3. **Merging to main, or any final acceptance authority.** Excluded by the
    success condition, which ends at "ready for operator review."
 
 Permanent, not scoped:
 
-5. **Being a general-purpose agent framework.** ABACUS orchestrates agents
+4. **Being a general-purpose agent framework.** ABACUS orchestrates agents
    against a backlog. It is not a library for arbitrary agent workflows.
 
 ## Kill criteria
@@ -71,3 +69,27 @@ delivers, no other property redeems it.
 Explicitly *not* kill criteria: unattended runs that need intervention, and
 review that yields too little leverage. Both are defects to debug, not
 evidence the goal is wrong.
+
+## Amendments
+
+### 2026-08-14 — planning enters the thesis
+
+- **Prior version:** blob `94b2ad5de415ee066de1b85442828c6ea5b77443`
+  (founding text, commit `5a6ad81`), unchanged until this revision.
+- **What changed:** the thesis was rewritten from execution-engine-only to a
+  software factory whose product includes the human-in-the-loop planning
+  flow; former non-goal 3 ("Planning or backlog authoring") was removed and
+  the list renumbered; the introduction's document map was corrected to this
+  repository's reality (dangling references to `CONTEXT.md` and
+  `docs/migration.md` removed); the non-goals preamble was reworded to state
+  how revision actually governs. The success condition and kill criteria are
+  deliberately untouched: the planning flow's own success bar will be defined
+  in its decision record and promoted here only with evidence.
+- **Evidence and rationale:** the execution loop is demonstrated end to end
+  — dispatch, outcome verification from bead state, lane reaping, and
+  worker-opened PRs, across eight worker lanes on 2026-08-13/14 — while the
+  backlog that feeds it still comes from a planning flow (`sable-plan`)
+  built for substrate this machine has retired (the `bd` tracker, SABLE
+  interlock hooks, and the manager fleet). The operator directs adapting
+  that flow into the product: skill first, machinery only after observed
+  need. Revision made on explicit operator invocation per revise mode.
