@@ -1,0 +1,17 @@
+{"conforms_to": "4",
+ "classes": [
+   "docs/adr",
+   "docs/prd",
+   "docs/compatibility",
+   "docs/compatibility/INDEX.md",
+   "docs/INDEX.md",
+   "docs/architecture.md",
+   "docs/history/INDEX.md"
+ ],
+ "standing_files": [],
+ "managed_globs": [],
+ "managed_files": ["AGENTS.md", "CONSTRAINTS.md", "NORTH-STAR.md"],
+ "alias_symlinks": [],
+ "historical_files": [],
+ "inflight_globs": ["SHIFT-REPORT-*.md", "PLANNING-*.md"],
+ "protected_mainline_ref": "refs/heads/main"}

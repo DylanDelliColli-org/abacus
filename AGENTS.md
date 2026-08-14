@@ -1,3 +1,8 @@
+```doc-meta
+role: contract
+lifecycle: active
+```
+
 # Agents
 
 You are in the **abacus** repository: an execution engine over `br` (work

@@ -1,3 +1,8 @@
+```doc-meta
+role: contract
+lifecycle: active
+```
+
 # ABACUS — North Star
 
 Established 2026-08-12 by operator interview (`/north-star`, establish mode).

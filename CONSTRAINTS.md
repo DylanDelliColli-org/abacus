@@ -1,3 +1,8 @@
+```doc-meta
+role: contract
+lifecycle: active
+```
+
 # Constraints — measured findings
 
 These four findings were paid for with real failures in `abacus-v1` and its
