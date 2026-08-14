@@ -50,6 +50,23 @@ The driver unions issue IDs from all three snapshots and keeps the complete
 line with the latest `updated_at`. If any line cannot be parsed, the driver
 exits non-zero so Git leaves a normal conflict for manual resolution.
 
+## Shared work-state wrapper
+
+`bin/br-shim` binds `br` commands run in linked worktrees to the main
+checkout's `.beads` store. Installing it as the PATH-precedent `br` command is
+a one-time operator action whose mechanics are owned by bead `ab-nl5.3`; the
+repository copy is not installed automatically.
+
+Until that installation is complete, or on a machine without the wrapper,
+bind every worker command inline:
+
+```sh
+BEADS_DIR=<main-checkout>/.beads br <arguments>
+```
+
+Do not rely on an exported `BEADS_DIR`: worker shell invocations do not share
+environment changes.
+
 ## Lanes
 
 - A worker lane is a git worktree under `~/.herdr/worktrees/abacus/` on a

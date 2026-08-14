@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# This single-operator shim must bypass PATH so an installed `br` shim cannot
+# resolve itself recursively.
+real_br=/home/ddc/.local/bin/br
+
+common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exec "$real_br" "$@"
+
+case "$common_dir" in
+    /*) ;;
+    *) common_dir=$PWD/$common_dir ;;
+esac
+
+common_dir=$(cd "$common_dir" 2>/dev/null && pwd -P) || exec "$real_br" "$@"
+local_git=$(cd ./.git 2>/dev/null && pwd -P) || local_git=
+
+if [ "$common_dir" != "$local_git" ]; then
+    main_checkout=${common_dir%/*}
+    if [ -d "$main_checkout/.beads" ]; then
+        BEADS_DIR=$main_checkout/.beads
+        export BEADS_DIR
+    fi
+fi
+
+exec "$real_br" "$@"
