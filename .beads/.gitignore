@@ -38,3 +38,8 @@ redirect
 
 # bv (beads viewer) lock file
 .bv.lock
+
+# br 0.3.x runtime artifacts
+.br_recovery/
+beads.db-*
+*.bak
