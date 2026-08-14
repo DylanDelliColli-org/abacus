@@ -53,12 +53,14 @@ exits non-zero so Git leaves a normal conflict for manual resolution.
 ## Shared work-state wrapper
 
 `bin/br-shim` binds `br` commands run in linked worktrees to the main
-checkout's `.beads` store. Installing it as the PATH-precedent `br` command is
-a one-time operator action whose mechanics are owned by bead `ab-nl5.3`; the
-repository copy is not installed automatically.
+checkout's `.beads` store. It is **installed** on this machine
+(2026-08-14): `~/.local/shims/br` is a symlink to the repository's
+`bin/br-shim`, and `~/.zshrc` prepends `~/.local/shims` to `PATH`. Repo
+updates to the shim propagate through the symlink; if the repository
+directory ever moves, the symlink fails loudly (`br` stops resolving) —
+re-point it rather than debugging br.
 
-Until that installation is complete, or on a machine without the wrapper,
-bind every worker command inline:
+On a machine without the wrapper, bind every worker command inline:
 
 ```sh
 BEADS_DIR=<main-checkout>/.beads br <arguments>
