@@ -335,8 +335,8 @@ fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
-    let ws = TempWorkspace::new("open-outcome");
+fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
+    let ws = TempWorkspace::new("main-store-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker never engaged"]);
 
@@ -386,7 +386,11 @@ fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
 
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("never engaged"), "stderr: {stderr}");
+    assert!(stderr.contains("in_progress"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("never engaged"),
+        "the stale lane tracker must not determine the outcome; stderr: {stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -672,31 +676,34 @@ fn abacus_without_a_command_prints_usage() {
 }
 
 #[test]
-fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
+fn dispatch_protocol_pushes_opens_pr_then_closes_without_lane_tracker_changes() {
     let ws = TempWorkspace::new("closed-push");
     let origin = ws.0.join("origin.git");
+    let tracker = ws.0.join("tracker");
     let lane = ws.0.join("lane");
     let origin_arg = origin.to_str().unwrap();
     let lane_arg = lane.to_str().unwrap();
 
     git(&ws.0, &["init", "--bare", origin_arg]);
     git(&ws.0, &["init", "-b", "lane/it-work", lane_arg]);
-    br(&lane, &["init", "--prefix", "it"]);
-    br(&lane, &["create", "--title=protocol regression"]);
+    std::fs::create_dir(&tracker).unwrap();
+    br(&tracker, &["init", "--prefix", "it"]);
+    br(&tracker, &["create", "--title=protocol regression"]);
 
-    let json = br(&lane, &["ready", "--json"]);
+    let json = br(&tracker, &["ready", "--json"]);
     let beads = parse_ready(&json).unwrap();
     let bead_id = &beads[0].id;
     let prompt = dispatch_prompt(bead_id, "lane/it-work");
     let close = prompt.find(&format!("br close {bead_id}")).unwrap();
-    let stage = prompt.find("git add .beads").unwrap();
     let commit = prompt.find("commit all work").unwrap();
     let push = prompt.find("git push -u origin lane/it-work").unwrap();
     let pr = prompt.find("gh pr create --base main").unwrap();
     assert!(
-        close < stage && stage < commit && commit < push && push < pr,
+        commit < push && push < pr && pr < close,
         "dispatch protocol is out of order: {prompt}"
     );
+    assert!(!prompt.contains("--claim"), "prompt: {prompt}");
+    assert!(!prompt.contains("git add .beads"), "prompt: {prompt}");
     assert!(
         prompt.contains(&format!("title containing `{bead_id}`")),
         "prompt: {prompt}"
@@ -711,7 +718,8 @@ fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
         "prompt: {prompt}"
     );
 
-    git(&lane, &["add", ".beads"]);
+    std::fs::write(lane.join("worker-change.txt"), "reviewable work\n").unwrap();
+    git(&lane, &["add", "worker-change.txt"]);
     git(
         &lane,
         &[
@@ -721,42 +729,30 @@ fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
             "user.email=abacus@example.invalid",
             "commit",
             "-m",
-            "seed open bead",
+            "implement worker change",
         ],
     );
     git(&lane, &["remote", "add", "origin", origin_arg]);
 
-    br(&lane, &["update", bead_id, "--claim"]);
-    br(&lane, &["close", bead_id]);
-    git(&lane, &["add", ".beads"]);
-    git(
-        &lane,
-        &[
-            "-c",
-            "user.name=Abacus Integration Test",
-            "-c",
-            "user.email=abacus@example.invalid",
-            "commit",
-            "-m",
-            "close completed bead",
-        ],
-    );
+    br(&tracker, &["update", bead_id, "--claim"]);
     git(&lane, &["push", "-u", "origin", "lane/it-work"]);
+    br(&tracker, &["close", bead_id]);
 
     assert!(git(&lane, &["status", "--porcelain"]).is_empty());
-    let remote_tracker = git(
+    let remote_files = git(
         &lane,
         &[
             "--git-dir",
             origin_arg,
-            "show",
-            "lane/it-work:.beads/issues.jsonl",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "lane/it-work",
         ],
     );
-    let pushed_bead = remote_tracker
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|bead| bead["id"] == bead_id.as_str())
-        .expect("pushed branch must contain the bead");
-    assert_eq!(pushed_bead["status"], "closed");
+    assert_eq!(remote_files, "worker-change.txt\n");
+    assert_eq!(
+        parse_bead_outcome(&br(&tracker, &["show", bead_id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
 }

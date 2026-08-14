@@ -180,16 +180,16 @@ pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
 pub fn dispatch_prompt(bead_id: &str, branch: &str) -> String {
     format!(
         "You are the worker lane for bead {bead_id}. This pane's working directory is a git \
-         worktree on branch {branch}; do all work here. Run `br show {bead_id}` for your full \
-         scope, then `br update {bead_id} --claim`. Write the failing test first, then \
-         implement until it passes, then run the full test suite. Once it passes, run \
-         `br close {bead_id}`, then `git add .beads` along with your source and test changes, \
-         commit all work, and push with `git push -u origin {branch}`. After the push, run \
+         worktree on branch {branch}; do all work here. The bead is already claimed to this lane. \
+         Run `br show {bead_id}` for your full scope. Write the failing test first, then implement \
+         until it passes, then run the full test suite. Once it passes, commit all work (source \
+         and test changes only), and push with `git push -u origin {branch}`. After the push, run \
          `gh pr create --base main`; use a title containing `{bead_id}` and write your own body \
          summarizing what was done and the test evidence, including suite results and red-first \
          confirmation. If a PR already exists for `{branch}`, treat that existing PR as success \
-         rather than a blocker. Verify the worktree is clean. If you cannot proceed, say BLOCKED \
-         and why, and stop."
+         rather than a blocker. Only after the push has succeeded and the PR exists, run \
+         `br close {bead_id}` as your final act. Verify the worktree is clean. If you cannot \
+         proceed, say BLOCKED and why, and stop."
     )
 }
 
@@ -348,6 +348,7 @@ mod tests {
         assert!(p.contains("abacus-v8s"));
         assert!(p.contains("lane/abacus-v8s"));
         assert!(p.contains("br show abacus-v8s"));
+        assert!(p.contains("already claimed to this lane"));
         assert!(p.contains("br close abacus-v8s"));
         assert!(p.contains("git push -u origin lane/abacus-v8s"));
         assert!(p.contains("gh pr create --base main"));
@@ -356,12 +357,20 @@ mod tests {
         assert!(p.contains("red-first confirmation"));
         assert!(p.contains("already exists for `lane/abacus-v8s`"));
         assert!(p.contains("treat that existing PR as success"));
+        assert!(
+            !p.contains("--claim"),
+            "the engine already claimed the shared-store bead: {p}"
+        );
+        assert!(
+            !p.contains("git add .beads"),
+            "lane commits must not carry tracker state: {p}"
+        );
 
         let close = p.find("br close abacus-v8s").unwrap();
         let push = p.find("git push -u origin lane/abacus-v8s").unwrap();
         let pr = p.find("gh pr create --base main").unwrap();
-        assert!(close < push, "close must happen before push: {p}");
         assert!(push < pr, "push must happen before PR creation: {p}");
+        assert!(pr < close, "close must be the final act after the PR exists: {p}");
     }
 
     #[test]

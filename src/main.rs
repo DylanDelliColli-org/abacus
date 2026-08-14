@@ -219,7 +219,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         let bead_state = capture(
             "br",
             &["show", &bead.id, "--json"],
-            Some(Path::new(&lane.checkout_path)),
+            Some(&repo),
         )?;
         let outcome = parse_bead_outcome(&bead_state)?;
         if should_reap_lane(outcome) {
