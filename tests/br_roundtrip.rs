@@ -127,6 +127,10 @@ fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
         stderr.contains("failed to spawn herdr"),
         "failure must occur while opening the lane; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("after "),
+        "lane-leg failure must report elapsed time; stderr: {stderr}"
+    );
 
     let state = br(&ws.0, &["show", &bead.id, "--json"]);
     assert_eq!(
@@ -228,6 +232,11 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("worker completed in "),
+        "completed lane must report elapsed time; stdout: {stdout}"
     );
     let calls = std::fs::read_to_string(calls).unwrap();
     assert!(

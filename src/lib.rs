@@ -9,6 +9,15 @@ pub fn version_string() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Format a lane's elapsed wall-clock seconds for compact outcome messages.
+pub fn format_lane_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
 /// One issue as emitted by `br ready --json` (an array of these).
 /// Only the fields the engine acts on are modeled; br's schema carries more.
 #[derive(Debug, Clone, Deserialize)]
@@ -184,6 +193,13 @@ mod tests {
     #[test]
     fn version_string_matches_cargo_package_version() {
         assert_eq!(version_string(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn lane_duration_formats_seconds_and_zero_padded_minutes() {
+        assert_eq!(format_lane_duration(0), "0s");
+        assert_eq!(format_lane_duration(42), "42s");
+        assert_eq!(format_lane_duration(4 * 60 + 7), "4m07s");
     }
 
     // Captured live from `br ready --json` in this repository, 2026-08-13.
