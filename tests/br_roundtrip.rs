@@ -82,6 +82,61 @@ fn ready_roundtrip_selects_highest_priority_bead() {
     assert!(selected.id.starts_with("it-"), "id was {}", selected.id);
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_skips_an_operator_seat_bead() {
+    let ws = TempWorkspace::new("operator-seat");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let operator_id = br(
+        &ws.0,
+        &[
+            "create",
+            "--title=operator milestone",
+            "--priority=0",
+            "--silent",
+        ],
+    )
+    .trim()
+    .to_owned();
+    br(
+        &ws.0,
+        &["label", "add", "--label=seat:operator", &operator_id],
+    );
+    let worker_id = br(
+        &ws.0,
+        &["create", "--title=worker task", "--priority=1", "--silent"],
+    )
+    .trim()
+    .to_owned();
+
+    let restricted_bin = ws.0.join("restricted-bin");
+    std::fs::create_dir(&restricted_bin).unwrap();
+    symlink(find_on_path("br"), restricted_bin.join("br")).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", restricted_bin)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("selected {worker_id}")),
+        "worker-seat bead was not selected; stdout: {stdout}"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &operator_id, "--json"])).unwrap(),
+        BeadOutcome::NeverEngaged,
+        "operator-seat bead must remain open"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &worker_id, "--json"])).unwrap(),
+        BeadOutcome::Incomplete,
+        "eligible worker bead must be claimed before lane creation"
+    );
+}
+
 #[test]
 fn abacus_run_on_empty_backlog_dispatches_nothing_and_exits_zero() {
     let ws = TempWorkspace::new("emptyrun");
