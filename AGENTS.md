@@ -6,6 +6,7 @@ the authority.
 
 ## Orientation
 
+- For planning work, follow **`.claude/skills/abacus-plan/SKILL.md`**.
 - **`NORTH-STAR.md`** is the standard every proposal is judged against. Read
   it before proposing anything.
 - **`CONSTRAINTS.md`** carries the four measured findings. They are paid-for
