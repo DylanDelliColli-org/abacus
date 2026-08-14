@@ -1,13 +1,13 @@
 # ADR 0001: The planning flow enters ABACUS as a skill
 
-- **Status:** draft — bloat review complete (six cuts proposed by a fresh
-  Codex context; operator applied one — producer mandates softened to
-  defaults — and reaffirmed five); spec validation complete (five anchored
-  findings from a second fresh Codex context, all applied as clarifications:
-  flow-level success bar defined, quick-tier classifier restored,
-  open-questions rule scoped to both tiers, research outputs marked
-  provisional with re-derivation at DECOMPOSITION, budget pricing marked as
-  estimates); pending final operator approval
+- **Status:** **accepted** 2026-08-14, operator approval after both review
+  passes. Trail: bloat review by a fresh Codex context proposed six cuts —
+  operator applied one (producer mandates softened to defaults) and
+  reaffirmed five; spec validation by a second fresh Codex context produced
+  five anchored findings, all applied as clarifications (flow-level success
+  bar defined, quick-tier classifier restored, open-questions rule scoped to
+  both tiers, research outputs marked provisional with re-derivation at
+  DECOMPOSITION, budget pricing marked as estimates).
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis as amended 2026-08-14 ("a
