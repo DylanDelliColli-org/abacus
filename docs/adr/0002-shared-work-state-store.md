@@ -8,8 +8,12 @@ lifecycle: active
 - **Status:** draft — bloat review complete (fresh Codex context, three
   cuts: operator applied the zyb-ordering sentence as a shrink and the
   cross-machine trim, and reaffirmed committed completion records on the
-  crash-first-class constraint); pending spec validation and operator
-  approval
+  crash-first-class constraint); spec validation complete (second fresh
+  Codex context, three findings, all applied by operator decision:
+  close-last worker protocol so a closed bead implies a reviewable PR,
+  per-command BEADS_DIR binding because worker shell invocations do not
+  share exports, and the concurrency evidence narrowed to its measured
+  read-side); pending final operator approval
 - **Date:** 2026-08-14
 - **Deciders:** operator (direction), orchestrator session (record)
 - **Authority:** NORTH-STAR.md thesis ("teams of provider-agnostic agents
@@ -43,13 +47,18 @@ moving main will collide again.
 Every worker lane uses the **main checkout's `br` store** directly. Lane
 branches never touch `.beads`.
 
-- **Carriage:** the dispatch prompt instructs the worker to export
-  `BEADS_DIR` pointing at the main checkout's `.beads` before any `br`
-  command — prompt carriage, the same mechanism that already carries the
-  bead identity (CONSTRAINTS.md finding 3).
+- **Carriage:** every `br` command the dispatch prompt issues carries the
+  binding inline — `BEADS_DIR=<main-checkout>/.beads br …` — because a
+  worker's shell invocations are independent and an exported variable in
+  one does not reach the next. Prompt carriage, the same mechanism that
+  already carries the bead identity (CONSTRAINTS.md finding 3), but bound
+  per command, never per session.
 - **Worker protocol:** claim and close run against the shared store. The
   `git add .beads` step is removed; a lane commits only source and test
-  changes.
+  changes. The close is the worker's **last act, after the push succeeds
+  and the PR exists** — so a `closed` bead means the work is reviewable,
+  and a failed push or PR leaves the bead `in_progress` for the probe to
+  report honestly.
 - **Outcome probe:** `abacus run` reads the shared store from the main
   checkout after settle. The evidence rule is unchanged — bead state, not
   runtime signals.
@@ -61,7 +70,10 @@ This deliberately reverses the close-before-push protocol decision (bead
 ab-zyb): the branch-carried completion record proved redundant in practice
 — the orchestrator reconciled every close into main anyway — and was the
 structural source of the conflict class. With a live shared store, the
-close-versus-push ordering that zyb regulated stops mattering entirely.
+ordering zyb regulated stops mattering for tracker carriage and PR
+mergeability; for outcome evidence it inverts — the close moves to the
+end of the worker sequence, after the push and the PR, so that bead
+state remains a truthful completion signal.
 
 ## Consequences
 
@@ -74,9 +86,12 @@ close-versus-push ordering that zyb regulated stops mattering entirely.
   dirt.
 - The `abacus merge-jsonl` driver remains for main-line merges across
   sessions; it stops being needed per PR.
-- Concurrent writes to one store are the proven path, not new risk:
-  finding 1's measurements — 879 reads, zero timeouts, p50 51ms — were
-  taken on one shared `br` store under 11 concurrent claimants.
+- The shared-store concurrency evidence is read-side: finding 1's
+  measurements — 879 reads, zero timeouts, p50 51ms — were taken on one
+  shared `br` store under 11 concurrent claimants. Concurrent write
+  behavior is unmeasured; the no-additional-locking decision stands on
+  `br`'s own locking, and the first concurrent-lane run after this lands
+  is its live measurement.
 - A lane crash leaves no tracker debris in the lane; the shared store and
   its committed JSONL snapshots are the recovery surface, per the
   crash-first-class constraint.
