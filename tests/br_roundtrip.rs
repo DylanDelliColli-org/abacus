@@ -335,8 +335,8 @@ fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
-    let ws = TempWorkspace::new("open-outcome");
+fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
+    let ws = TempWorkspace::new("main-store-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker never engaged"]);
 
@@ -386,7 +386,11 @@ fn abacus_run_rejects_a_settled_lane_whose_bead_is_still_open() {
 
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("never engaged"), "stderr: {stderr}");
+    assert!(stderr.contains("in_progress"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("never engaged"),
+        "the stale lane tracker must not determine the outcome; stderr: {stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -643,6 +647,158 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker() {
+    let ws = TempWorkspace::new("never-engaged-retry-recovers");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker survives lost startup prompt"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let prompt_attempts = ws.0.join("prompt-attempts");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "never-engaged-retry-workspace" },
+            "root_pane": { "pane_id": "never-engaged-retry-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'attempt\\n' >> '{}'\n\
+               cd '{}'\n\
+               if [ \"$(wc -l < '{}')\" -eq 1 ]; then\n\
+                 br update '{}' --status open\n\
+               else\n\
+                 br close '{}'\n\
+               fi\n\
+             fi\n",
+            lane_json,
+            prompt_attempts.display(),
+            ws.0.display(),
+            prompt_attempts.display(),
+            bead.id,
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(prompt_attempts).unwrap(),
+        "attempt\nattempt\n"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_run_stops_after_a_second_never_engaged_outcome() {
+    let ws = TempWorkspace::new("never-engaged-retry-exhausted");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker loses both startup prompts"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let prompt_attempts = ws.0.join("prompt-attempts");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "never-engaged-failure-workspace" },
+            "root_pane": { "pane_id": "never-engaged-failure-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'attempt\\n' >> '{}'\n\
+               cd '{}'\n\
+               br update '{}' --status open\n\
+             fi\n",
+            lane_json,
+            prompt_attempts.display(),
+            ws.0.display(),
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("never engaged"), "stderr: {stderr}");
+    assert_eq!(
+        std::fs::read_to_string(prompt_attempts).unwrap(),
+        "attempt\nattempt\n"
+    );
+}
+
 #[test]
 fn abacus_without_a_command_prints_usage() {
     let out = Command::new(env!("CARGO_BIN_EXE_abacus")).output().unwrap();
@@ -672,31 +828,34 @@ fn abacus_without_a_command_prints_usage() {
 }
 
 #[test]
-fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
+fn dispatch_protocol_pushes_opens_pr_then_closes_without_lane_tracker_changes() {
     let ws = TempWorkspace::new("closed-push");
     let origin = ws.0.join("origin.git");
+    let tracker = ws.0.join("tracker");
     let lane = ws.0.join("lane");
     let origin_arg = origin.to_str().unwrap();
     let lane_arg = lane.to_str().unwrap();
 
     git(&ws.0, &["init", "--bare", origin_arg]);
     git(&ws.0, &["init", "-b", "lane/it-work", lane_arg]);
-    br(&lane, &["init", "--prefix", "it"]);
-    br(&lane, &["create", "--title=protocol regression"]);
+    std::fs::create_dir(&tracker).unwrap();
+    br(&tracker, &["init", "--prefix", "it"]);
+    br(&tracker, &["create", "--title=protocol regression"]);
 
-    let json = br(&lane, &["ready", "--json"]);
+    let json = br(&tracker, &["ready", "--json"]);
     let beads = parse_ready(&json).unwrap();
     let bead_id = &beads[0].id;
     let prompt = dispatch_prompt(bead_id, "lane/it-work");
     let close = prompt.find(&format!("br close {bead_id}")).unwrap();
-    let stage = prompt.find("git add .beads").unwrap();
     let commit = prompt.find("commit all work").unwrap();
     let push = prompt.find("git push -u origin lane/it-work").unwrap();
     let pr = prompt.find("gh pr create --base main").unwrap();
     assert!(
-        close < stage && stage < commit && commit < push && push < pr,
+        commit < push && push < pr && pr < close,
         "dispatch protocol is out of order: {prompt}"
     );
+    assert!(!prompt.contains("--claim"), "prompt: {prompt}");
+    assert!(!prompt.contains("git add .beads"), "prompt: {prompt}");
     assert!(
         prompt.contains(&format!("title containing `{bead_id}`")),
         "prompt: {prompt}"
@@ -711,7 +870,8 @@ fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
         "prompt: {prompt}"
     );
 
-    git(&lane, &["add", ".beads"]);
+    std::fs::write(lane.join("worker-change.txt"), "reviewable work\n").unwrap();
+    git(&lane, &["add", "worker-change.txt"]);
     git(
         &lane,
         &[
@@ -721,42 +881,30 @@ fn dispatch_protocol_closes_pushes_then_opens_pr_and_leaves_lane_clean() {
             "user.email=abacus@example.invalid",
             "commit",
             "-m",
-            "seed open bead",
+            "implement worker change",
         ],
     );
     git(&lane, &["remote", "add", "origin", origin_arg]);
 
-    br(&lane, &["update", bead_id, "--claim"]);
-    br(&lane, &["close", bead_id]);
-    git(&lane, &["add", ".beads"]);
-    git(
-        &lane,
-        &[
-            "-c",
-            "user.name=Abacus Integration Test",
-            "-c",
-            "user.email=abacus@example.invalid",
-            "commit",
-            "-m",
-            "close completed bead",
-        ],
-    );
+    br(&tracker, &["update", bead_id, "--claim"]);
     git(&lane, &["push", "-u", "origin", "lane/it-work"]);
+    br(&tracker, &["close", bead_id]);
 
     assert!(git(&lane, &["status", "--porcelain"]).is_empty());
-    let remote_tracker = git(
+    let remote_files = git(
         &lane,
         &[
             "--git-dir",
             origin_arg,
-            "show",
-            "lane/it-work:.beads/issues.jsonl",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "lane/it-work",
         ],
     );
-    let pushed_bead = remote_tracker
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|bead| bead["id"] == bead_id.as_str())
-        .expect("pushed branch must contain the bead");
-    assert_eq!(pushed_bead["status"], "closed");
+    assert_eq!(remote_files, "worker-change.txt\n");
+    assert_eq!(
+        parse_bead_outcome(&br(&tracker, &["show", bead_id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
 }

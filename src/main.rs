@@ -131,6 +131,24 @@ fn cmd_merge_jsonl(ours: &Path, base: &Path, theirs: &Path) -> Result<(), String
         .map_err(|e| format!("cannot write ours file {}: {e}", ours.display()))
 }
 
+fn retry_never_engaged_once<Reprompt, Reprobe>(
+    initial_outcome: BeadOutcome,
+    reprompt: Reprompt,
+    reprobe: Reprobe,
+) -> Result<(Option<String>, BeadOutcome), String>
+where
+    Reprompt: FnOnce() -> Result<String, String>,
+    Reprobe: FnOnce() -> Result<BeadOutcome, String>,
+{
+    if initial_outcome != BeadOutcome::NeverEngaged {
+        return Ok((None, initial_outcome));
+    }
+
+    let settled = reprompt()?;
+    let outcome = reprobe()?;
+    Ok((Some(settled), outcome))
+}
+
 fn cmd_run(repo: &Path) -> Result<(), String> {
     let repo = repo
         .canonicalize()
@@ -216,12 +234,22 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         };
         println!("{}", settled.trim_end());
 
-        let bead_state = capture(
-            "br",
-            &["show", &bead.id, "--json"],
-            Some(Path::new(&lane.checkout_path)),
+        let bead_state = capture("br", &["show", &bead.id, "--json"], Some(&repo))?;
+        let initial_outcome = parse_bead_outcome(&bead_state)?;
+        if initial_outcome == BeadOutcome::NeverEngaged {
+            eprintln!("worker never engaged after startup prompt; retrying once");
+        }
+        let (retry_settled, outcome) = retry_never_engaged_once(
+            initial_outcome,
+            || capture("herdr", &prompt_args, None),
+            || {
+                let bead_state = capture("br", &["show", &bead.id, "--json"], Some(&repo))?;
+                parse_bead_outcome(&bead_state)
+            },
         )?;
-        let outcome = parse_bead_outcome(&bead_state)?;
+        if let Some(retry_settled) = retry_settled {
+            println!("{}", retry_settled.trim_end());
+        }
         if should_reap_lane(outcome) {
             let remove_args = ["worktree", "remove", "--workspace", &lane.workspace_id];
             match capture("herdr", &remove_args, None) {
@@ -301,6 +329,30 @@ mod tests {
     #[test]
     fn usage_text_describes_the_run_command() {
         assert!(usage().contains("abacus run"));
+    }
+
+    #[test]
+    fn never_engaged_retry_runs_one_reprompt_and_one_reprobe_only() {
+        let mut prompt_calls = 0;
+        let mut probe_calls = 0;
+
+        let (settled, outcome) = retry_never_engaged_once(
+            BeadOutcome::NeverEngaged,
+            || {
+                prompt_calls += 1;
+                Ok("second prompt settled".to_owned())
+            },
+            || {
+                probe_calls += 1;
+                Ok(BeadOutcome::NeverEngaged)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(settled.as_deref(), Some("second prompt settled"));
+        assert_eq!(outcome, BeadOutcome::NeverEngaged);
+        assert_eq!(prompt_calls, 1, "only one recovery prompt is allowed");
+        assert_eq!(probe_calls, 1, "the recovery prompt gets one re-probe");
     }
 
     #[test]
