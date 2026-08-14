@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 
 use abacus::{
-    BeadOutcome, dispatch_prompt, is_agent_prompt_stalled, parse_bead_outcome, parse_ready,
-    parse_worktree_created, sanitize_agent_name, select_bead, should_reap_lane, version_string,
+    BeadOutcome, dispatch_prompt, is_agent_prompt_stalled, is_dirty_worktree_remove_error,
+    parse_bead_outcome, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
+    should_reap_lane, version_string,
 };
 
 fn main() {
@@ -197,17 +198,29 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     )?;
     let outcome = parse_bead_outcome(&bead_state)?;
     if should_reap_lane(outcome) {
-        capture(
-            "herdr",
-            &[
-                "worktree",
-                "remove",
-                "--workspace",
-                &lane.workspace_id,
-                "--force",
-            ],
-            None,
-        )?;
+        let remove_args = ["worktree", "remove", "--workspace", &lane.workspace_id];
+        match capture("herdr", &remove_args, None) {
+            Ok(_) => {}
+            Err(error) if is_dirty_worktree_remove_error(&error) => {
+                eprintln!(
+                    "WARNING: completed lane left uncommitted changes in workspace {}; \
+                     forcing removal. This is a protocol violation worth investigating.",
+                    lane.workspace_id
+                );
+                capture(
+                    "herdr",
+                    &[
+                        "worktree",
+                        "remove",
+                        "--workspace",
+                        &lane.workspace_id,
+                        "--force",
+                    ],
+                    None,
+                )?;
+            }
+            Err(error) => return Err(error),
+        }
         println!("lane reaped: workspace {}", lane.workspace_id);
     }
 
