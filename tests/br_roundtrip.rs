@@ -136,6 +136,126 @@ fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
+    let ws = TempWorkspace::new("dotted-agent-name");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let parent_id = br(
+        &ws.0,
+        &["create", "--title=dispatch epic", "--type=epic", "--silent"],
+    )
+    .trim()
+    .to_owned();
+    let child_id = br(
+        &ws.0,
+        &[
+            "create",
+            "--title=dotted child dispatch",
+            "--parent",
+            &parent_id,
+            "--priority=0",
+            "--silent",
+        ],
+    )
+    .trim()
+    .to_owned();
+    assert!(child_id.contains('.'), "child id was {child_id}");
+    let agent_name = child_id.replace('.', "-");
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let calls = ws.0.join("herdr-calls");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "dotted-workspace" },
+            "root_pane": { "pane_id": "dotted-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{child_id}")
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent start\" ]; then\n\
+               case \"$3\" in\n\
+                 [a-z]*) ;;\n\
+                 *) printf '%s\\n' 'invalid_agent_name: name must start with a lowercase letter' >&2; exit 1 ;;\n\
+               esac\n\
+               case \"$3\" in\n\
+                 *[!a-z0-9_-]*) printf '%s\\n' 'invalid_agent_name: unsupported character' >&2; exit 1 ;;\n\
+               esac\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               if [ \"$3\" != '{}' ]; then\n\
+                 printf '%s\\n' 'agent prompt used a different name' >&2\n\
+                 exit 1\n\
+               fi\n\
+               cd '{}'\n\
+               br update '{}' --claim\n\
+               br close '{}'\n\
+             fi\n",
+            calls.display(),
+            lane_json,
+            agent_name,
+            ws.0.display(),
+            child_id,
+            child_id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let calls = std::fs::read_to_string(calls).unwrap();
+    assert!(
+        calls.lines().any(|call| {
+            call.contains(&format!("--branch lane/{child_id}"))
+                && call.contains(&format!("--label {child_id}"))
+        }),
+        "worktree identity changed:\n{calls}"
+    );
+    assert!(
+        calls.lines().any(|call| {
+            call == format!("agent start {agent_name} --kind codex --pane dotted-pane")
+        }),
+        "agent start did not use the sanitized name:\n{calls}"
+    );
+    assert!(
+        calls.lines().any(|call| {
+            call.starts_with(&format!("agent prompt {agent_name} "))
+                && call.contains(&format!("br show {child_id}"))
+                && call.contains(&format!("br close {child_id}"))
+                && call.contains(&format!("git push -u origin lane/{child_id}"))
+        }),
+        "agent prompt lost sanitized routing or exact bead identity:\n{calls}"
+    );
+    let state = br(&ws.0, &["show", &child_id, "--json"]);
+    assert_eq!(parse_bead_outcome(&state).unwrap(), BeadOutcome::Completed);
+}
+
 #[test]
 fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
     let ws = TempWorkspace::new("notracker");

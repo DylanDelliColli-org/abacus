@@ -10,7 +10,7 @@ use std::process::{Command, exit};
 
 use abacus::{
     BeadOutcome, dispatch_prompt, is_agent_prompt_stalled, parse_bead_outcome, parse_ready,
-    parse_worktree_created, select_bead, should_reap_lane, version_string,
+    parse_worktree_created, sanitize_agent_name, select_bead, should_reap_lane, version_string,
 };
 
 fn main() {
@@ -137,6 +137,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     capture("br", &["update", &bead.id, "--claim"], Some(&repo))?;
     println!("selected {} — {}", bead.id, bead.title);
 
+    let agent_name = sanitize_agent_name(&bead.id);
     let branch = format!("lane/{}", bead.id);
     let created = capture(
         "herdr",
@@ -164,7 +165,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         &[
             "agent",
             "start",
-            &bead.id,
+            &agent_name,
             "--kind",
             "codex",
             "--pane",
@@ -172,13 +173,13 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         ],
         None,
     )?;
-    println!("codex worker started as agent {}", bead.id);
+    println!("codex worker started as agent {agent_name}");
 
     let prompt = dispatch_prompt(&bead.id, &lane.branch);
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let prompt_args = ["agent", "prompt", &bead.id, &prompt, "--wait"];
+    let prompt_args = ["agent", "prompt", &agent_name, &prompt, "--wait"];
     let settled = match capture("herdr", &prompt_args, None) {
         Ok(settled) => settled,
         Err(error) if is_agent_prompt_stalled(&error) => {

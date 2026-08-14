@@ -33,6 +33,30 @@ pub fn select_bead(beads: &[ReadyBead]) -> Option<&ReadyBead> {
     beads.iter().min_by_key(|b| b.priority)
 }
 
+/// Convert a bead id into Herdr's display-name grammar:
+/// `[a-z][a-z0-9_-]{0,31}`. Unsupported characters become hyphens; the
+/// leading position is normalized separately so every input remains valid.
+pub fn sanitize_agent_name(bead_id: &str) -> String {
+    let mut name: String = bead_id
+        .chars()
+        .take(32)
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    match name.as_bytes().first() {
+        Some(b'a'..=b'z') => {}
+        Some(_) => name.replace_range(..1, "a"),
+        None => name.push('a'),
+    }
+    name
+}
+
 /// The evidence `abacus run` uses after Herdr says a lane has settled.
 /// Herdr's agent state is only a wake-up signal; the bead status is the
 /// durable account of whether the worker actually engaged and completed.
@@ -214,6 +238,35 @@ mod tests {
     fn missing_priority_defaults_to_two() {
         let beads = parse_ready(r#"[{"id":"abacus-x","title":"t"}]"#).unwrap();
         assert_eq!(beads[0].priority, 2);
+    }
+
+    #[test]
+    fn sanitizes_bead_ids_for_herdr_agent_names() {
+        assert_eq!(sanitize_agent_name("ab-qmc.1"), "ab-qmc-1");
+        assert_eq!(sanitize_agent_name("ab-QMC.1"), "ab-----1");
+        assert_eq!(
+            sanitize_agent_name("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "abcdefghijklmnopqrstuvwxyz012345"
+        );
+
+        for bead_id in [
+            "ab-qmc.1",
+            "ab-QMC.1",
+            "abcdefghijklmnopqrstuvwxyz0123456789",
+        ] {
+            let name = sanitize_agent_name(bead_id);
+            assert!((1..=32).contains(&name.len()), "name was {name:?}");
+            assert!(
+                name.starts_with(|c: char| c.is_ascii_lowercase()),
+                "name was {name:?}"
+            );
+            assert!(
+                name.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_')
+                }),
+                "name was {name:?}"
+            );
+        }
     }
 
     #[test]
