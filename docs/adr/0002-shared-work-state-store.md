@@ -98,12 +98,16 @@ state remains a truthful completion signal.
   dirt.
 - The `abacus merge-jsonl` driver remains for main-line merges across
   sessions; it stops being needed per PR.
-- The shared-store concurrency evidence is read-side: finding 1's
-  measurements — 879 reads, zero timeouts, p50 51ms — were taken on one
-  shared `br` store under 11 concurrent claimants. Concurrent write
-  behavior is unmeasured; the no-additional-locking decision stands on
-  `br`'s own locking, and the first concurrent-lane run after this lands
-  is its live measurement.
+- The shared-store concurrency evidence covers both sides. Read-side:
+  finding 1's measurements — 879 reads, zero timeouts, p50 51ms — on one
+  shared `br` store under 11 concurrent claimants. Write-side: a
+  pre-landing contention probe (2026-08-14, scratch store) ran 11
+  concurrent writers through the production shape — claim, notes, close
+  on disjoint rows: 11/11 in 1.61s; 11 same-row comment appends: 11/11
+  in 0.52s; a 33-write burst: 1.94s — zero failures, zero lock, busy, or
+  timeout diagnostics, store integrity in sync afterward. The
+  no-additional-locking decision stands on `br`'s own locking, now
+  measured on both sides.
 - A lane crash leaves no tracker debris in the lane; the shared store and
   its committed JSONL snapshots are the recovery surface, per the
   crash-first-class constraint.
