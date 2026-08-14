@@ -200,14 +200,12 @@ Each waits for its observed failure or measured need.
      with sections appended and committed at each gate so a crashed session
      resumes from the tree. At handoff the record's durable substance has
      landed in the beads, the epic, and any RECORD output; the file itself
-     is **deleted**, and a pointer row naming the last-containing commit is
-     appended to `docs/history/INDEX.md`. The `docs/planning/` directory
-     concept is retired.
+     is **deleted** — git history is the archive. The `docs/planning/`
+     directory concept is retired.
   2. **RECORD is conditional.** A full-tier run produces an ADR (or rarely
      a PRD) only when it locked a durable decision or requirement someone
-     will need to consult later. Otherwise RECORD states "no durable record
-     warranted" with the reason, in the in-flight record. The review gate
-     still runs whenever a record is produced.
+     will need to consult later; otherwise no record is produced. The
+     review gate still runs whenever a record is produced.
   3. **The quick-tier test-spec method** absorbs, inline, the discipline
      that caught two missed cases in the 2026-08-14 flow comparison: grep
      the existing test surface first and bias to extending named existing
@@ -224,5 +222,7 @@ Each waits for its observed failure or measured need.
   the taxonomy-driven test method finding a negative-space case and a
   boundary case the inline table missed, while SABLE's gitignored planning
   state demonstrated the crash-loss failure the committed in-flight record
-  avoids. Amendment made on explicit operator direction; the doc-meta
-  block above landed with it as part of corpus adoption.
+  avoids. Amendment made on explicit operator direction. Bloat review of
+  this amendment (fresh Codex context): three cuts proposed, all three
+  applied by operator disposition — the history pointer row, the no-record
+  receipt, and the doc-meta provenance clause.
