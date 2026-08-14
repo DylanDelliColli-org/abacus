@@ -111,7 +111,21 @@ fn abacus_run_skips_an_operator_seat_bead() {
 
     let restricted_bin = ws.0.join("restricted-bin");
     std::fs::create_dir(&restricted_bin).unwrap();
-    symlink(find_on_path("br"), restricted_bin.join("br")).unwrap();
+    let real_br = find_on_path("br");
+    let br_calls = ws.0.join("br-calls");
+    let br_wrapper = restricted_bin.join("br");
+    std::fs::write(
+        &br_wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            br_calls.display(),
+            real_br.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&br_wrapper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&br_wrapper, permissions).unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
@@ -124,6 +138,16 @@ fn abacus_run_skips_an_operator_seat_bead() {
     assert!(
         stdout.contains(&format!("selected {worker_id}")),
         "worker-seat bead was not selected; stdout: {stdout}"
+    );
+    let br_calls = std::fs::read_to_string(br_calls).unwrap();
+    let ready_calls: Vec<_> = br_calls
+        .lines()
+        .filter(|call| call.starts_with("ready "))
+        .collect();
+    assert_eq!(
+        ready_calls,
+        ["ready --json"],
+        "selection must use labels from one ready query; br calls:\n{br_calls}"
     );
     assert_eq!(
         parse_bead_outcome(&br(&ws.0, &["show", &operator_id, "--json"])).unwrap(),
