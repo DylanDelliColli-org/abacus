@@ -668,3 +668,97 @@ Because there is headroom, nothing was cut. If a later substage must trim, the t
 - **Thinning-by-environment:** the skip guards for the 17 `br`-requiring tests could quietly turn local-only integration into "skipped everywhere". The skip-guard bead's acceptance must read: **on the operator host, `cargo test` still reports 45+ passed, 0 ignored** — the guard skips only when `br` is genuinely absent, and D7's local leg runs the full set.
 
 **Gaps surfaced for DECOMPOSITION.** Two S9 items RESEARCH flagged have no locked ARCHITECTURE decision, so T42 and T43 are gated: the `--base main` hardcode at `src/lib.rs:190`, and `bin/br-shim:5`'s hardcoded `real_br` path (also a CI-portability blocker for `tests/shim.rs`).
+
+---
+
+## ARCHITECTURE — addendum: the GitHub merge queue pivot (2026-08-15)
+
+Adopted by operator decision after the bloat reviewer's
+post-clarification update. The enabling fact came from the operator: a
+GitHub organization exists (`DylanDelliColli-org`, verified via
+`gh api user/orgs`) and the repository is public (verified) — so the
+native merge queue is available after a repo transfer. D1's rejection
+is reversed with its reasoning corrected on the record: the
+`merge_group` commit is exactly the moving-base candidate the remote
+leg must validate (the "speculative commit" objection was the weak
+leg); ordering delegation is acceptable because a merge limit of one
+preserves serial landing; dequeued conflicts route to abacus's
+exception handler, which is where S6 now lives.
+
+### Revised decisions
+
+- **D1′ (supersedes D1):** GitHub's merge queue owns ordering,
+  candidate construction, remote validation on the `merge_group`
+  commit, and the merge itself. Repo configuration: branch protection
+  with the portable CI jobs as required checks, a merge-queue ruleset,
+  merge limit 1. **Prerequisite (operator act, becomes a
+  `seat:operator` bead all implementation children depend on):**
+  transfer the repository to the org, then apply that configuration.
+- **D2′ (supersedes D2):** `abacus land` shrinks to
+  **admission → enqueue → exception watch**. Admission: full local
+  validation (suite, clippy, fmt — br-dependent tests included) of the
+  PR branch composed with current origin/main in a throwaway, unpushed
+  worktree; a composition that conflicts at admission routes to the
+  exception handler without enqueueing. Enqueue: the gh merge-queue
+  verb (exact flag verified at implementation). Exception watch:
+  a PR dequeued by the queue, or conflicting at admission, gets exactly
+  one agent-resolution attempt in a fresh lane (launch env carries
+  bead id, attempt, resolution framing — CONSTRAINTS findings 2–3),
+  then re-enqueue on green re-admission or park. `--once` retained as
+  the integration-test entry point.
+- **D5′ (supersedes D5):** the pre-merge polling loop (BEHIND recheck,
+  poll-until-known before merging) is deleted — GitHub owns it. What
+  survives in `src/land.rs`: eligibility parsing (queue configured,
+  required checks present — probed at land startup), enqueue-result
+  parsing, and queue-state reading for the exception watch.
+  `capture_status` (exit-code-aware sibling) is still built.
+- **D6′ (supersedes D6):** branch-update-and-push machinery is deleted
+  from the happy path. The admission worktree is throwaway and never
+  pushed. Force-push, rebase, `update-branch`, and `-X` strategy
+  options remain forbidden everywhere.
+- **D8′ (supersedes D8):** the resolution ladder collapses to:
+  admission-conflict or dequeue → one agent attempt → re-enqueue or
+  park. `git rerere` and new domain-driver work are dropped as engine
+  layers (bloat cuts 3 and 6 absorbed); the resolution lane naturally
+  inherits the repo's git config, including the existing
+  `merge-jsonl` driver.
+- **D9′ (supersedes D9):** the engine never lands a merge itself —
+  enqueueing is the act. The forbidden-flag list revises: `--admin`
+  remains forbidden always; queue enqueueing is the mechanism, so
+  "never delegate ordering to GitHub" is retired; branch deletion
+  machinery is deleted (repo setting `delete_branch_on_merge` is the
+  operator's knob if wanted).
+
+### Unchanged
+
+D3 (drain), D4 (branch-name discovery), D10 (opt-in is running land;
+eligibility now means queue-configured), D11 (pure `src/land.rs`), D12
+(stateless recovery — stronger: the queue itself lives on GitHub), D13
+(AGENTS.md exception), D14/D15 (S9 de-hardcodes). D7 is redefined
+rather than unchanged: the local leg runs at admission; the remote leg
+is CI on the `merge_group`, with `merge_group:` added to the S8
+workflow triggers.
+
+### Bloat-review dispositions (both runs, consolidated)
+
+Run 1 (pre-amendment) is superseded by run 2 (post-amendment, fresh
+pane). Run 2: cut 1 (remote CI) withdrawn by the reviewer after
+operator clarification; cuts 3 (rerere) and 6 (branch deletion)
+accepted — absorbed structurally by the pivot; cut 2 (S9 generality)
+reaffirmed — the operator decided "both in" at the TEST-STRATEGY gate;
+cut 4 (teardown invariant) reaffirmed — the invariant is ~0s string
+checks and its value is inherit-by-default coverage of future paths;
+cut 5 (`--once`) reaffirmed — it is the test contract's entry point.
+
+### Residual tradeoff, recorded honestly
+
+The br-dependent 17 tests validate at admission against main-at-that-
+moment, never on the exact `merge_group` composition. Deferred until an
+observed failure (operator MVP-first ruling); revive by installing `br`
+in CI (RESEARCH option 2) if that parity is ever declared load-bearing.
+
+### New verify-at-implementation items
+
+The exact gh enqueue verb and its behavior on a queue-required repo;
+how dequeue events are observed (poll surface); the `merge_group`
+trigger's interaction with required-check naming.
