@@ -1,7 +1,9 @@
 //! Integration: real `br` binary against a throwaway workspace, and the real
-//! `abacus` binary against real backlogs. Requires `br` on PATH (it is the
-//! pinned substrate — a machine that can't run these can't run abacus).
+//! `abacus` binary against real backlogs. Tests that need the pinned `br`
+//! substrate return early when it is not resolvable on PATH, while portable
+//! contract tests continue to run.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,15 +57,132 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn find_on_path(program: &str) -> PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").expect("test PATH must be set"))
+fn executable_file(candidate: &Path) -> bool {
+    let Ok(metadata) = candidate.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn find_on_supplied_path(program: &str, path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
         .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
-        .unwrap_or_else(|| panic!("{program} must be on PATH"))
+        .find(|candidate| executable_file(candidate))
+}
+
+fn program_is_on_path(program: &str, path: &OsStr) -> bool {
+    find_on_supplied_path(program, path).is_some()
+}
+
+fn find_on_path(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| find_on_supplied_path(program, &path))
+}
+
+macro_rules! require_br {
+    () => {
+        if find_on_path("br").is_none() {
+            eprintln!("skipping br-dependent test: br is not resolvable on PATH");
+            return;
+        }
+    };
+}
+
+#[test]
+fn ci_workflow_uses_the_manifest_toolchain_and_required_commands() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(repository.join("Cargo.toml")).unwrap();
+    let rust_version = manifest
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("rust-version = \"")
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .expect("Cargo.toml must declare package.rust-version");
+    let workflow = std::fs::read_to_string(repository.join(".github/workflows/ci.yml"))
+        .expect("the standard CI workflow must exist");
+
+    let rust_version_reader = r#"sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml"#;
+    assert!(
+        workflow.matches(rust_version_reader).count() == 3,
+        "each CI job must read Cargo.toml's rust-version ({rust_version})"
+    );
+    assert!(
+        workflow.contains("steps.rust-version.outputs.version"),
+        "workflow must select the toolchain read from Cargo.toml"
+    );
+    assert!(
+        workflow.contains("cargo test"),
+        "workflow must run the portable test suite"
+    );
+    assert!(
+        workflow.contains("cargo clippy --all-targets --all-features -- -D warnings"),
+        "workflow must deny clippy warnings"
+    );
+    assert!(
+        workflow.contains("cargo fmt --check"),
+        "workflow must check formatting"
+    );
+
+    let triggers = workflow
+        .strip_prefix("name: CI\n\non:\n")
+        .and_then(|rest| rest.split_once("\njobs:"))
+        .map(|(triggers, _)| triggers)
+        .expect("workflow must have a top-level on block before jobs");
+    for trigger in ["pull_request:", "push:", "merge_group:"] {
+        assert!(triggers.contains(trigger), "missing {trigger} trigger");
+    }
+    assert!(
+        triggers.contains("      - main"),
+        "push must target the default branch"
+    );
+
+    let jobs = workflow
+        .split_once("\njobs:\n")
+        .map(|(_, jobs)| jobs)
+        .expect("workflow must define jobs");
+    for job in ["test", "clippy", "fmt"] {
+        assert!(
+            jobs.lines().any(|line| line == format!("  {job}:")),
+            "missing stable {job} job name"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn br_presence_guard_follows_the_supplied_path() {
+    let workspace = TempWorkspace::new("br-presence");
+    let empty_bin = workspace.0.join("empty-bin");
+    let populated_bin = workspace.0.join("populated-bin");
+    std::fs::create_dir(&empty_bin).unwrap();
+    std::fs::create_dir(&populated_bin).unwrap();
+
+    assert!(!program_is_on_path("br", empty_bin.as_os_str()));
+
+    let fake_br = populated_bin.join("br");
+    std::fs::write(&fake_br, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = std::fs::metadata(&fake_br).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_br, permissions).unwrap();
+
+    assert!(program_is_on_path("br", populated_bin.as_os_str()));
 }
 
 #[test]
 fn ready_roundtrip_selects_highest_priority_bead() {
+    require_br!();
     let ws = TempWorkspace::new("roundtrip");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(
@@ -85,6 +204,7 @@ fn ready_roundtrip_selects_highest_priority_bead() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_skips_an_operator_seat_bead() {
+    require_br!();
     let ws = TempWorkspace::new("operator-seat");
     br(&ws.0, &["init", "--prefix", "it"]);
     let operator_id = br(
@@ -111,7 +231,7 @@ fn abacus_run_skips_an_operator_seat_bead() {
 
     let restricted_bin = ws.0.join("restricted-bin");
     std::fs::create_dir(&restricted_bin).unwrap();
-    let real_br = find_on_path("br");
+    let real_br = find_on_path("br").expect("guarded by require_br");
     let br_calls = ws.0.join("br-calls");
     let br_wrapper = restricted_bin.join("br");
     std::fs::write(
@@ -163,6 +283,7 @@ fn abacus_run_skips_an_operator_seat_bead() {
 
 #[test]
 fn abacus_run_on_empty_backlog_dispatches_nothing_and_exits_zero() {
+    require_br!();
     let ws = TempWorkspace::new("emptyrun");
     br(&ws.0, &["init", "--prefix", "it"]);
 
@@ -182,6 +303,7 @@ fn abacus_run_on_empty_backlog_dispatches_nothing_and_exits_zero() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
+    require_br!();
     let ws = TempWorkspace::new("claim-before-lane");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=claim before dispatch"]);
@@ -192,7 +314,11 @@ fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
 
     let restricted_bin = ws.0.join("restricted-bin");
     std::fs::create_dir(&restricted_bin).unwrap();
-    symlink(find_on_path("br"), restricted_bin.join("br")).unwrap();
+    symlink(
+        find_on_path("br").expect("guarded by require_br"),
+        restricted_bin.join("br"),
+    )
+    .unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
@@ -222,6 +348,7 @@ fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
+    require_br!();
     let ws = TempWorkspace::new("dotted-agent-name");
     br(&ws.0, &["init", "--prefix", "it"]);
     let parent_id = br(
@@ -346,6 +473,7 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
 
 #[test]
 fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
+    require_br!();
     let ws = TempWorkspace::new("notracker");
 
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
@@ -360,6 +488,7 @@ fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
+    require_br!();
     let ws = TempWorkspace::new("main-store-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker never engaged"]);
@@ -420,6 +549,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead() {
+    require_br!();
     let ws = TempWorkspace::new("closed-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker completes"]);
@@ -496,6 +626,7 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
 #[cfg(unix)]
 #[test]
 fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
+    require_br!();
     let ws = TempWorkspace::new("dirty-completed-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=dirty worker completes"]);
@@ -598,6 +729,7 @@ fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
+    require_br!();
     let ws = TempWorkspace::new("prompt-retry");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(&ws.0, &["create", "--title=worker survives prompt race"]);
@@ -674,6 +806,7 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
 #[cfg(unix)]
 #[test]
 fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engaged_worker() {
+    require_br!();
     let ws = TempWorkspace::new("transient-outcome-probe");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(
@@ -720,7 +853,7 @@ fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engag
             probe_attempts.display(),
             failed_probe.display(),
             failed_probe.display(),
-            find_on_path("br").display(),
+            find_on_path("br").expect("guarded by require_br").display(),
         ),
     )
     .unwrap();
@@ -790,6 +923,7 @@ fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engag
 #[cfg(unix)]
 #[test]
 fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker() {
+    require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(
@@ -872,6 +1006,7 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
 #[cfg(unix)]
 #[test]
 fn abacus_run_stops_after_a_second_never_engaged_outcome() {
+    require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-exhausted");
     br(&ws.0, &["init", "--prefix", "it"]);
     br(
@@ -969,6 +1104,7 @@ fn abacus_without_a_command_prints_usage() {
 
 #[test]
 fn dispatch_protocol_pushes_opens_pr_then_closes_without_lane_tracker_changes() {
+    require_br!();
     let ws = TempWorkspace::new("closed-push");
     let origin = ws.0.join("origin.git");
     let tracker = ws.0.join("tracker");
