@@ -12,7 +12,14 @@ lifecycle: active
   after operator clarification and escalated into the merge-queue
   pivot this ADR now records, cuts 3 and 6 accepted and absorbed by
   the pivot, cuts 2, 4, 5 reaffirmed by operator decision. Spec
-  validation pending.
+  validation complete (third fresh Codex context, own pane): seven
+  findings — four high, two medium, one low — every one a
+  faithfulness restoration of an already-decided item, all applied:
+  default-branch admission (S9), the resolved bare enqueue verb and
+  the full D9′ forbidden list, the first-enqueued-PR acceptance
+  observation, lane-owned resolution pushes, the no-PR normal skip,
+  the three-field park body, and the anticipated-not-measured framing
+  of the conflict hazard.
 - **Date:** 2026-08-15
 - **Deciders:** operator (direction; recorded decisions across the
   FRAMING, RESEARCH, and TEST-STRATEGY gates, the north-star
@@ -29,23 +36,31 @@ lifecycle: active
 The execution loop demonstrated on 2026-08-13/14 ends at the PR:
 workers push, open PRs, and close their beads; the operator merges by
 hand each morning. An overnight multi-bead run leaves main moving only
-when merges happen — without engine-side merging, PRs pile up against
-one base and conflict serially during manual merges, or the operator
-intervenes overnight, which the success condition forbids. The
+when merges happen — without engine-side merging, PRs accumulate
+against one base overnight, carrying the anticipated risk of serial
+conflicts at manual merge time, or the operator intervenes overnight,
+which the success condition forbids. The
 operator directed an autonomous mode for lower-risk repositories where
 merge throughput matters more than morning review, directed that CI
 become standard across their repositories, and amended the north star
-accordingly (2026-08-15).
+accordingly (2026-08-15). The cross-lane source-conflict hazard itself
+is anticipated, not measured — observed conflict rate to date is
+approximately zero, since main's inter-PR movement has been
+tracker-only and ADR 0002 removed that class — and the operator
+accepted building ahead of measurement because serialized overnight
+merging changes the base-movement regime by design.
 
 Planning ran as a full-tier `abacus-plan` epic (`ab-automerge-2b2`);
 this ADR compresses its gated FRAMING (stories S1–S9), RESEARCH,
 ARCHITECTURE with its merge-queue addendum, and TEST-STRATEGY
 sections; the planning record's git history holds the full trail.
 
-Two facts shaped the final design. First, the close-last protocol is
-test-enforced, so a closed bead implies a pushed branch and an
-existing PR — the engine can rediscover any PR from its
-`lane/<bead-id>` branch name with no new persisted state. Second, an
+Two facts shaped the final design. First, the close-last protocol —
+ordered in prompt text and asserted by tests, though not enforced at
+runtime — makes a closed bead the strong signal that a pushed branch
+and PR exist; the engine rediscovers any PR from its `lane/<bead-id>`
+branch name with no new persisted state, and a closed bead with no
+matching open PR is a normal skip, never an error. Second, an
 engine-owned merge loop was designed in full and then substantially
 deleted at review: the initial architecture rejected GitHub's native
 merge queue on the grounds that it validates a speculative merge
@@ -80,24 +95,33 @@ beside the existing `abacus run`:
   it leaves the morning-review default untouched. At startup, land
   refuses a repository whose merge queue or required checks are not
   configured.
-  - **Admission:** full local validation — suite, clippy, fmt,
-    including the `br`-dependent integration tests — of the PR branch
-    composed with current origin/main in a throwaway, unpushed
-    worktree. A red admission parks the PR with evidence; a
-    composition that conflicts routes to the exception handler without
-    enqueueing.
-  - **Enqueue:** add the PR to the merge queue (the gh verb is
-    verified at implementation). GitHub then validates the
-    `merge_group` with the portable CI (whose workflow carries the
-    `merge_group:` trigger) and merges FIFO.
+  - **Admission:** a candidate is a closed bead intersected with a
+    matching open `lane/*` PR; a closed bead with no such PR is a
+    normal skip. Full local validation — suite, clippy, fmt,
+    including the `br`-dependent integration tests — runs on the PR
+    branch composed with the current tip of the repository's
+    **default branch** (discovered, never hardcoded — S9) in a
+    throwaway, unpushed worktree, freshly fetched per cycle. A red
+    admission parks the PR with evidence; a composition that
+    conflicts routes to the exception handler without enqueueing.
+  - **Enqueue:** bare `gh pr merge <branch>` with **no strategy
+    flag** — on a queue-required branch this is the enqueue verb
+    (probed, gh 2.87.3), and its two success shapes (added to queue;
+    auto-merge enabled while checks are pending) both mean admitted.
+    GitHub then validates the `merge_group` with the portable CI
+    (whose workflow carries the `merge_group:` trigger) and merges
+    FIFO.
   - **Exception watch:** a PR the queue dequeues, or one that
     conflicts at admission, gets **exactly one** agent-resolution
     attempt in a fresh herdr lane on the PR branch — the launch
     carries bead id, attempt marker, and explicit resolution framing
-    (CONSTRAINTS findings 2–3) — then re-enqueues on green
-    re-admission or **parks**: the PR stays open with a
-    `gh pr comment` carrying the failure evidence, the bead stays
-    closed, the tracker is never written, and the run continues.
+    (CONSTRAINTS findings 2–3), and the lane pushes its own
+    resolution commits as it makes them, exactly as worker lanes do —
+    then re-enqueues on green re-admission or **parks**: the PR stays
+    open with a `gh pr comment` carrying the **dequeue reason, bead
+    id, and admitted SHA** (the checks tab is the path to the failing
+    job), the bead stays closed, the tracker is never written, and
+    the run continues.
 
 **Validation legs are asymmetric by decision:** the local admission
 leg is the full-parity gate; the queue's CI validates the portable
@@ -109,16 +133,26 @@ failure; the revival path is installing `br` in CI.
 **Crash recovery is stateless recomputation** (CONSTRAINTS finding 4):
 the queue itself lives on GitHub; candidates re-derive from GitHub and
 the `br` store on every start; admission worktrees are throwaway;
-nothing about queue position is persisted on the host.
+nothing about queue position is persisted on the host. The resolution
+lane pushes its commits to the PR branch **as it makes them** and
+abacus itself never pushes — so an uncommitted worktree never holds
+the only copy of anything, and a crash mid-resolution loses at most
+the not-yet-made part of the attempt.
 
 **Code shape:** `src/land.rs` is a pure policy module — eligibility
 parsing, enqueue-result parsing, queue-state reading, park-evidence
 construction — fixture-tested; process-spawning gains one
 exit-code-aware sibling of `capture()`, with `capture()` and its call
-sites untouched. `BeadOutcome` is not extended. Forbidden always:
-`gh pr merge --admin`, force-push, rebase of lane branches,
-`gh pr update-branch`, and `-X` merge strategy options in any engine
-git invocation.
+sites untouched. `BeadOutcome` is not extended. **Forbidden always**
+(the teardown invariant every land integration test asserts):
+`gh pr merge --admin` — gh's documented merge-queue bypass, the
+one-flag bypass of this entire design; `--match-head-commit` — its
+presence means abacus is landing directly instead of enqueueing;
+`-d`/`--delete-branch`; `gh pr update-branch`; force-push and rebase
+of lane branches; `-X` merge strategy options in any engine git
+invocation; `git push` anywhere in abacus's own argv; and mutating
+`gh api` calls to rulesets or branch protection — repository
+configuration is the operator's act, never the engine's.
 
 **Generality (S9):** the worker prompt reads the repository's default
 branch instead of hardcoding `--base main`, preserving verbatim the
@@ -130,8 +164,11 @@ with the current path as fallback.
 `-D warnings`, fmt `--check` — on `pull_request`, `push` to the
 default branch, and `merge_group`, ships first on this repository,
 with `Cargo.toml`'s `rust-version` as the single toolchain pin the
-workflow reads. Acceptance is verify-by-first-run: first two runs
-green, durations recorded on the bead.
+workflow reads. Acceptance is verify-by-first-run, in two parts:
+first two runs green with durations recorded on the bead, **and the
+first enqueued PR leaves the queue merged** — the single observation
+proving the `merge_group` trigger, the required-check names in the
+operator's ruleset, and the enqueue verb all agree.
 
 **Worker contract:** unchanged. Workers still never merge; AGENTS.md
 gains the engine-side exception for land mode. The default
