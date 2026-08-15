@@ -76,8 +76,11 @@ environment changes.
 - Write the failing test first; implement until green; run the full suite
   (`cargo test`), plus `cargo clippy` and `cargo fmt --check`.
 - Commit and self-push your lane branch: `git push -u origin lane/<bead-id>`.
-- **Autonomy ends at the PR.** Never merge to `main`; the operator reviews
-  at the merge boundary.
+- **Worker autonomy ends at the PR.** Workers never merge to `main` or any
+  other default branch. In land mode, the engine — never a worker — enqueues
+  validated PRs into the repository's merge queue, which performs the merge
+  ([ADR 0003](docs/adr/0003-pr-validation-and-auto-merge.md)). Without land
+  mode, the operator reviews at the merge boundary.
 - **Read-only review dispatches** (bloat review, spec validation) must state
   in the prompt that the review is not bead-tracked work — no beads, no
   branches, no commits. A reviewer that follows the prime directive without
