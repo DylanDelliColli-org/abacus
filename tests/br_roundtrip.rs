@@ -6,6 +6,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -16,9 +17,26 @@ struct TempWorkspace(PathBuf);
 
 impl TempWorkspace {
     fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("abacus-it-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = (0..1_024)
+            .find_map(|attempt| {
+                let candidate = std::env::temp_dir().join(format!(
+                    "abacus-it-{tag}-{}-{nonce}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&candidate) {
+                    Ok(()) => Some(candidate),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!(
+                        "failed to create temporary workspace {}: {error}",
+                        candidate.display()
+                    ),
+                }
+            })
+            .unwrap_or_else(|| panic!("failed to allocate a unique temporary workspace for {tag}"));
         git(&dir, &["init", "--quiet", "--initial-branch", "main"]);
         git(
             &dir,
@@ -106,6 +124,41 @@ macro_rules! require_br {
             return;
         }
     };
+}
+
+#[test]
+fn temp_workspace_allocations_with_the_same_tag_are_isolated() {
+    let first = TempWorkspace::new("repeated-tag");
+    let marker = first.0.join("first-workspace-marker");
+    std::fs::write(&marker, "owned by the first workspace\n").unwrap();
+
+    let second = TempWorkspace::new("repeated-tag");
+
+    assert_ne!(
+        first.0, second.0,
+        "independent test processes can share a PID namespace and reuse tags"
+    );
+    assert!(
+        marker.is_file(),
+        "allocating a second workspace removed the first workspace"
+    );
+}
+
+#[test]
+fn real_br_stores_with_the_same_workspace_tag_do_not_overlap() {
+    require_br!();
+    let first = TempWorkspace::new("repeated-real-br-tag");
+    br(&first.0, &["init", "--prefix", "it"]);
+    br(&first.0, &["create", "--title=first workspace bead"]);
+
+    let second = TempWorkspace::new("repeated-real-br-tag");
+    br(&second.0, &["init", "--prefix", "it"]);
+    br(&second.0, &["create", "--title=second workspace bead"]);
+
+    let first_ready = parse_ready(&br(&first.0, &["ready", "--json"])).unwrap();
+    let second_ready = parse_ready(&br(&second.0, &["ready", "--json"])).unwrap();
+    assert_eq!(first_ready[0].title, "first workspace bead");
+    assert_eq!(second_ready[0].title, "second workspace bead");
 }
 
 #[test]
@@ -267,13 +320,19 @@ fn abacus_run_skips_an_operator_seat_bead() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let br_calls = std::fs::read_to_string(&br_calls)
+        .unwrap_or_else(|error| format!("<unavailable: {error}>"));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout: {stdout}\nstderr: {stderr}\nbr calls:\n{br_calls}"
+    );
     assert!(
         stdout.contains(&format!("selected {worker_id}")),
-        "worker-seat bead was not selected; stdout: {stdout}"
+        "worker-seat bead was not selected; stdout: {stdout}\nstderr: {stderr}\nbr calls:\n{br_calls}"
     );
-    let br_calls = std::fs::read_to_string(br_calls).unwrap();
     let ready_calls: Vec<_> = br_calls
         .lines()
         .filter(|call| call.starts_with("ready "))
