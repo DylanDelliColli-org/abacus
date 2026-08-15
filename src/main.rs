@@ -186,6 +186,21 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         println!("no ready beads in {repo_str}; nothing to dispatch");
         return Ok(());
     };
+    let default_branch_ref = capture(
+        "git",
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        Some(&repo),
+    )?;
+    let default_branch = default_branch_ref
+        .trim()
+        .strip_prefix("origin/")
+        .filter(|branch| !branch.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "unexpected origin/HEAD symbolic ref: {:?}",
+                default_branch_ref.trim()
+            )
+        })?;
     capture("br", &["update", &bead.id, "--claim"], Some(&repo))?;
     println!("selected {} — {}", bead.id, bead.title);
 
@@ -229,7 +244,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         )?;
         println!("codex worker started as agent {agent_name}");
 
-        let prompt = dispatch_prompt(&bead.id, &lane.branch);
+        let prompt = dispatch_prompt(&bead.id, &lane.branch, default_branch);
         println!(
             "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
         );

@@ -179,14 +179,14 @@ pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
 /// The dispatch prompt is the bead's identity carriage (measured finding 3,
 /// SHIFT-REPORT-2026-08-13 §7): a context-lost worker must be able to find
 /// its own bead and branch from the prompt alone.
-pub fn dispatch_prompt(bead_id: &str, branch: &str) -> String {
+pub fn dispatch_prompt(bead_id: &str, branch: &str, default_branch: &str) -> String {
     format!(
         "You are the worker lane for bead {bead_id}. This pane's working directory is a git \
          worktree on branch {branch}; do all work here. The bead is already claimed to this lane. \
          Run `br show {bead_id}` for your full scope. Write the failing test first, then implement \
          until it passes, then run the full test suite. Once it passes, commit all work (source \
          and test changes only), and push with `git push -u origin {branch}`. After the push, run \
-         `gh pr create --base main`; use a title containing `{bead_id}` and write your own body \
+         `gh pr create --base {default_branch}`; use a title containing `{bead_id}` and write your own body \
          summarizing what was done and the test evidence, including suite results and red-first \
          confirmation. If a PR already exists for `{branch}`, treat that existing PR as success \
          rather than a blocker. Only after the push has succeeded and the PR exists, run \
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn dispatch_prompt_carries_bead_identity_and_protocol() {
-        let p = dispatch_prompt("abacus-v8s", "lane/abacus-v8s");
+        let p = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main");
         assert!(p.contains("abacus-v8s"));
         assert!(p.contains("lane/abacus-v8s"));
         assert!(p.contains("br show abacus-v8s"));
@@ -378,6 +378,9 @@ mod tests {
             pr < close,
             "close must be the final act after the PR exists: {p}"
         );
+
+        let develop = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "develop");
+        assert!(develop.contains("gh pr create --base develop"));
     }
 
     #[test]
