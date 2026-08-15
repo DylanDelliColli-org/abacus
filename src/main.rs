@@ -759,6 +759,68 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
     }
 }
 
+fn parse_symbolic_default_branch(output: &str) -> Result<String, String> {
+    let symbolic_ref = output.trim();
+    symbolic_ref
+        .strip_prefix("origin/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("unexpected origin/HEAD symbolic ref: {symbolic_ref:?}"))
+}
+
+fn parse_advertised_default_branch(output: &str) -> Result<String, String> {
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("ref:") {
+            continue;
+        }
+        let Some(reference) = fields.next() else {
+            continue;
+        };
+        if fields.next() != Some("HEAD") || fields.next().is_some() {
+            continue;
+        }
+        if let Some(branch) = reference
+            .strip_prefix("refs/heads/")
+            .filter(|branch| !branch.is_empty())
+        {
+            return Ok(branch.to_owned());
+        }
+    }
+
+    Err(format!(
+        "unexpected advertised remote HEAD: {:?}",
+        output.trim()
+    ))
+}
+
+fn discover_default_branch(repo: &Path) -> Result<String, String> {
+    let symbolic_attempt = capture(
+        "git",
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        Some(repo),
+    )
+    .and_then(|output| parse_symbolic_default_branch(&output));
+    let symbolic_error = match symbolic_attempt {
+        Ok(branch) => return Ok(branch),
+        Err(error) => error,
+    };
+
+    capture(
+        "git",
+        &["ls-remote", "--symref", "origin", "HEAD"],
+        Some(repo),
+    )
+    .and_then(|output| parse_advertised_default_branch(&output))
+    .map_err(|advertised_error| {
+        format!(
+            "default branch discovery failed after both attempts: \
+             `git symbolic-ref --short refs/remotes/origin/HEAD`: {symbolic_error}; \
+             `git ls-remote --symref origin HEAD`: {advertised_error}"
+        )
+    })
+}
+
 fn dispatch_cycle(
     repo: &Path,
     repo_str: &str,
@@ -774,21 +836,7 @@ fn dispatch_cycle(
     let Some(bead) = select_bead(&claimable) else {
         return Ok(DispatchCycle::Empty);
     };
-    let default_branch_ref = capture(
-        "git",
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        Some(repo),
-    )?;
-    let default_branch = default_branch_ref
-        .trim()
-        .strip_prefix("origin/")
-        .filter(|branch| !branch.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "unexpected origin/HEAD symbolic ref: {:?}",
-                default_branch_ref.trim()
-            )
-        })?;
+    let default_branch = discover_default_branch(repo)?;
     if let Err(error) = capture("br", &["update", &bead.id, "--claim"], Some(repo)) {
         if reselect_after_claim_failure {
             eprintln!(
@@ -841,7 +889,7 @@ fn dispatch_cycle(
         )?;
         println!("codex worker started as agent {agent_name}");
 
-        let prompt = dispatch_prompt(&bead.id, &lane.branch, default_branch);
+        let prompt = dispatch_prompt(&bead.id, &lane.branch, &default_branch);
         println!(
             "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
         );
@@ -985,6 +1033,16 @@ mod tests {
 
         assert!(error.contains(&format!("`sh -c {command}` failed")));
         assert!(error.ends_with(": failure detail"));
+    }
+
+    #[test]
+    fn parses_the_advertised_remote_head_branch() {
+        let output = "ref: refs/heads/release/next\tHEAD\n0123456789abcdef\tHEAD\n";
+
+        assert_eq!(
+            parse_advertised_default_branch(output).unwrap(),
+            "release/next"
+        );
     }
 
     #[test]

@@ -664,6 +664,141 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn abacus_run_discovers_the_remote_default_without_a_local_origin_head() {
+    let ws = TempWorkspace::new("remote-default-branch-fallback");
+    git(
+        &ws.0,
+        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+    );
+    git(
+        &ws.0,
+        &[
+            "-c",
+            "user.name=Abacus Integration Test",
+            "-c",
+            "user.email=abacus@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed remote default",
+        ],
+    );
+    let origin = ws.0.join("origin.git");
+    let origin_arg = origin.to_str().unwrap();
+    git(
+        &ws.0,
+        &["init", "--bare", "--initial-branch", "develop", origin_arg],
+    );
+    git(&ws.0, &["remote", "add", "origin", origin_arg]);
+    git(&ws.0, &["push", "origin", "HEAD:refs/heads/develop"]);
+    let local_head = Command::new("git")
+        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .current_dir(&ws.0)
+        .output()
+        .unwrap();
+    assert!(
+        !local_head.status.success(),
+        "fixture unexpectedly has refs/remotes/origin/HEAD"
+    );
+
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(&ws.0, &["create", "--title=dispatch via remote HEAD"]);
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let calls = ws.0.join("herdr-calls");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "fallback-workspace" },
+            "root_pane": { "pane_id": "fallback-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               cd '{}'\n\
+               br close '{}'\n\
+             fi\n",
+            calls.display(),
+            lane_json,
+            ws.0.display(),
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let calls = std::fs::read_to_string(calls).unwrap();
+    assert!(
+        calls
+            .lines()
+            .any(|call| call.contains("gh pr create --base develop")),
+        "worker prompt did not use the advertised remote default branch:\n{calls}"
+    );
+}
+
+#[test]
+fn abacus_run_names_both_default_branch_discovery_attempts_when_they_fail() {
+    require_br!();
+    let ws = TempWorkspace::new("default-branch-dual-failure");
+    git(
+        &ws.0,
+        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+    );
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(&ws.0, &["create", "--title=unresolvable default branch"]);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    for attempted in [
+        "git symbolic-ref --short refs/remotes/origin/HEAD",
+        "git ls-remote --symref origin HEAD",
+    ] {
+        assert!(
+            stderr.contains(attempted),
+            "error did not name {attempted:?}: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn abacus_run_without_a_tracker_fails_with_brs_own_message() {
     require_br!();
