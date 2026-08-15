@@ -886,3 +886,13 @@ the workflow must match the operator's ruleset (nothing local can
 assert the ruleset half), and **the first enqueued PR leaving the
 queue merged** is the single observation proving the `merge_group`
 trigger, check naming, and enqueue verb agree.
+
+### Post-delta operator decisions (2026-08-15, at the consolidated re-gate)
+
+- **Park body is coarse for the wedge:** the evidence comment carries
+  the dequeue reason (non-empty, T49), bead id, and admitted SHA;
+  morning review reaches the failing job via the PR's checks tab. A
+  merge_group run-reading surface waits for observed need.
+- **Resolution commits are pushed by the agent lane**, like every
+  worker lane; abacus's own git argv never contains `push` and the
+  forbidden-flags invariant stays absolute.
