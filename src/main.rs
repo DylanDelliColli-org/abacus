@@ -328,9 +328,53 @@ fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, S
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run a command and capture its exit code, stdout, and stderr without
+/// treating a non-zero exit as an error.
+// The dependent `land` bead adds the first production caller.
+#[allow(dead_code)]
+fn capture_status(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+) -> Result<(i32, String, String), String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+    Ok((
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_status_preserves_non_zero_exit_code_and_output() {
+        let (code, stdout, stderr) =
+            capture_status("sh", &["-c", "printf out; printf err >&2; exit 8"], None).unwrap();
+
+        assert_eq!(code, 8);
+        assert_eq!(stdout, "out");
+        assert_eq!(stderr, "err");
+    }
+
+    #[test]
+    fn capture_non_zero_error_keeps_command_line_and_trimmed_stderr() {
+        let command = "printf ignored; printf '  failure detail  \\n' >&2; exit 7";
+
+        let error = capture("sh", &["-c", command], None).unwrap_err();
+
+        assert!(error.contains(&format!("`sh -c {command}` failed")));
+        assert!(error.ends_with(": failure detail"));
+    }
 
     #[test]
     fn usage_text_describes_the_run_command() {
