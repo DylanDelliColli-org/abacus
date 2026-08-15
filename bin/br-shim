@@ -2,7 +2,7 @@
 
 # This single-operator shim must bypass PATH so an installed `br` shim cannot
 # resolve itself recursively.
-real_br=/home/ddc/.local/bin/br
+real_br=${BR_REAL:-/home/ddc/.local/bin/br}
 
 common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exec "$real_br" "$@"
 

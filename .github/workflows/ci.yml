@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  merge_group:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Rust version
+        id: rust-version
+        run: |
+          version="$(sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Rust
+        run: rustup toolchain install "${{ steps.rust-version.outputs.version }}" --profile minimal
+      - name: Test
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.rust-version.outputs.version }}
+        run: cargo test
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Rust version
+        id: rust-version
+        run: |
+          version="$(sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Rust with Clippy
+        run: rustup toolchain install "${{ steps.rust-version.outputs.version }}" --profile minimal --component clippy
+      - name: Clippy
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.rust-version.outputs.version }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Rust version
+        id: rust-version
+        run: |
+          version="$(sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Rust with rustfmt
+        run: rustup toolchain install "${{ steps.rust-version.outputs.version }}" --profile minimal --component rustfmt
+      - name: Format
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.rust-version.outputs.version }}
+        run: cargo fmt --check

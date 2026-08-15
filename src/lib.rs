@@ -2,6 +2,8 @@
 //! compose the dispatch prompt. All process spawning lives in `main.rs`;
 //! everything here is pure so it can be tested against captured fixtures.
 
+pub mod land;
+
 use serde::Deserialize;
 
 pub const OPERATOR_SEAT_LABEL: &str = "seat:operator";
