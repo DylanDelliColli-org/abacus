@@ -38,11 +38,15 @@ panes — under real concurrency.
 A backlog of N ready beads drains to closed overnight across two repositories
 with **zero operator interventions**. Merge conflicts across the resulting
 commits and PRs are identified and resolved by the engine. The final clean
-PR(s) are ready for operator review in the morning.
+PR(s) are ready for operator review in the morning. On repositories the
+operator opts in, the engine also merges pending PRs during the overnight
+run — serially, each validated against the main it actually lands on — and
+the morning report becomes merged main plus any parked PRs carrying their
+failure evidence (ADR 0003).
 
-Autonomy ends at the PR. Acceptance happens inside the agent team — a
-reviewer accepts, the bead closes — while the human review gate sits at the
-merge boundary.
+Autonomy ends at the PR, except on repositories opted into overnight
+merging. Acceptance happens inside the agent team — a reviewer accepts, the
+bead closes — while the human review gate sits at the merge boundary.
 
 ## Non-goals
 
@@ -53,8 +57,9 @@ stands here.
 1. **Slack or any chat integration.** The morning's PRs are the report.
 2. **Third-party distribution** — install flows, onboarding documentation,
    cross-version compatibility for anyone who is not the operator.
-3. **Merging to main, or any final acceptance authority.** Excluded by the
-   success condition, which ends at "ready for operator review."
+3. **Merging to main outside an opted-in overnight run, or any final
+   acceptance authority beyond it.** The default still ends at "ready for
+   operator review"; opting a repository in is an explicit operator act.
 
 Permanent, not scoped:
 
@@ -98,3 +103,24 @@ evidence the goal is wrong.
   interlock hooks, and the manager fleet). The operator directs adapting
   that flow into the product: skill first, machinery only after observed
   need. Revision made on explicit operator invocation per revise mode.
+
+### 2026-08-15 — overnight merging enters the goals for opted-in repositories
+
+- **Prior version:** blob `3109a8ebea557aa38398c4b6f570f05538513c07`
+  (as amended 2026-08-14, commit `679bbcc`).
+- **What changed:** the success condition gains one sentence — on
+  repositories the operator opts in, the engine merges pending PRs during
+  the overnight run, serially, each validated against the main it lands
+  on, with parked PRs as the morning exceptions; "Autonomy ends at the
+  PR" gains the opted-in exception clause; non-goal 3 is qualified to
+  exclude merging only outside an opted-in overnight run. Deliberately
+  untouched: the thesis, beneficiary, non-goal 4, and kill criteria —
+  the operator held the amendment to the minimum that licenses the
+  decided work, and repo-agnostic design detail stays in ADR 0003.
+- **Evidence and rationale:** the `ab-automerge-2b2` full planning run
+  (FRAMING, RESEARCH, ARCHITECTURE, TEST-STRATEGY gates all
+  operator-approved 2026-08-14/15), recorded in ADR 0003. Operator
+  direction: an overnight multi-bead run leaves the base moving only when
+  merges happen, and on lower-risk repositories merge throughput
+  outranks morning review. Revision made on explicit operator invocation
+  per revise mode.
