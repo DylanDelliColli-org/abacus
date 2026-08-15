@@ -924,3 +924,87 @@ on the concrete text.
 
 Operator approval of this section: given with the ADR acceptance,
 2026-08-15.
+
+---
+
+## DECOMPOSITION
+
+Eight children authored 2026-08-15 under `ab-automerge-2b2`, derived
+from the accepted planning state (ADR 0003 plus the gated sections
+above), each carrying its test spec inline because this file is
+deleted at handoff.
+
+### Children and story traceability
+
+| ID | Title | Stories / decisions | Final footprint |
+|---|---|---|---|
+| .1 | Transfer repo to org and configure the merge queue (`seat:operator`) | S1, S3, D1′ | tests/fixtures/ only |
+| .2 | CI groundwork: workflow, rust-version, skip guards, BR_REAL | S7, S8, S9, D15 | .github/workflows/ci.yml, Cargo.toml, tests/br_roundtrip.rs, tests/shim.rs, bin/br-shim |
+| .3 | capture_status sibling (`grp:engine-spine`) | D5′ | src/main.rs |
+| .4 | abacus drain loop (`grp:engine-spine`) | success metric, S5, D3 | src/main.rs, tests/drain.rs, tests/br_roundtrip.rs |
+| .5 | src/land.rs pure policy module | S1, S2, S4, S6, D5′, D11 | src/land.rs (+one mod line) |
+| .6 | abacus land wiring (`grp:engine-spine`) | S1–S4, S6, D2′, D6′, D9′, D12 | src/main.rs, tests/land.rs |
+| .7 | Worker prompt default branch + AGENTS.md exception | S9, D13, D14 | src/lib.rs, src/main.rs, AGENTS.md |
+| .8 | Live validation: first enqueued PR merges (`seat:operator`) | S7, S8, verify-by-first-run | src/land.rs (fixture wiring), tests/fixtures/ |
+
+### Dependencies and ready front
+
+Requirement edges: .4 needs .2 (its br_roundtrip additions must be
+authored inside the skip-guarded harness); .6 needs .3 and .5; .8
+needs .1, .2, .6. Verified: `br ready` shows exactly .1, .2, .3, .5,
+.7; blocked set matches intent; `br lint` clean after the epic gained
+its Success Criteria section. The addendum's "all implementation
+children depend on" the prerequisite was deliberately narrowed at
+decomposition to the children that genuinely require the live queue
+(.8) — engine code is fake-CLI-testable and honestly independent.
+
+### Bundle groups: re-derived, retained, dropped
+
+Retained: **A → `grp:engine-spine`** on .3/.4/.6 (all edit
+src/main.rs; one lane claims all three, works them in dependency
+order, one PR — the operator-approved bundling pattern). **C → .7**
+as a single lane (verbatim prompt-assertion coupling). **D → .2** as
+a single lane (the operator's gate-out decision made it
+single-footprint). Dropped: **B** (no config surface exists to build
+— D10 made opt-in invocation); **E** (the pivot collapsed conflict
+resolution into .6's exception watch); **F** (D14 folded into .7,
+D15 into .2; fixture-path items live in their owning beads).
+
+### Tripwire verdict
+
+Folded cases: additions only; the one accepted fold (T4's four-step
+happy cycle) is documented in .6 with its mitigating single-leg
+failure tests. Deleted tests: zero — the no-retirement constraint is
+written into the epic and repeated in .2, .4, .7; the
+`push < pr < close` preservation clause is a named hard constraint in
+.7. Thinned assertions: the named risks live in their owning beads
+(.6 carries "the negative halves ARE the assertion" on T15/T22/T7;
+.2 carries the 0-ignored-on-operator-host acceptance). The review
+pass proved the lens necessary: .7's original acceptance contained a
+grep-to-zero clause that would have deleted the protected assertion
+at src/lib.rs:373 — caught and scoped before any worker saw it
+(jotted as a wording pattern for future runs).
+
+### Freshness verdict (victor-type producer, judged from beads + HEAD only)
+
+3 CLEAN (.4, .6, .8), 5 FIXED, 1 FLAGGED-and-corrected: the .7
+self-contradiction above. Notable fixes: .1's transfer step was
+already done (the operator transferred the repository mid-session;
+old path redirects; local remote update and all queue configuration
+remain real work — the .8 dependency stands); .2's acceptance command
+was unexecutable as written (PATH excluded cargo itself — corrected);
+.3's call-site count corrected to ten with the line list; .5's enum
+line off by one. Every load-bearing citation (capture at
+src/main.rs:311-329, the :371-378 assertion, the panic sites, the
+fake-CLI harness range, retry_probe_once's error-discarding shape,
+the ruleset `[]` probe, both br JSON envelopes, gh 2.87.3, the
+merge-jsonl driver, PR 17) was verified live rather than assumed. All
+eight children pass the Fresh Agent Test in the producer's judgment.
+
+### Open questions
+
+None. Every ambiguity raised in any substage was operator-decided in
+its gate (tier, seven framing decisions, loop scope, br-in-CI, both
+S9 de-hardcodes, the queue pivot, park-body coarseness, push
+ownership, ADR acceptance) or converted into a verify-at-
+implementation item recorded in the owning bead.
