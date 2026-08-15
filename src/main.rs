@@ -4,7 +4,7 @@
 //! acceptance, and evidence chains are deliberately absent (SHIFT-REPORT
 //! 2026-08-13 §3).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
 use std::time::{Duration, Instant};
@@ -31,6 +31,13 @@ fn main() {
                 exit(1);
             }
         }
+        Some("drain") => {
+            let repo = args.get(1).map(PathBuf::from).unwrap_or_else(|| ".".into());
+            if let Err(e) = cmd_drain(&repo) {
+                eprintln!("abacus drain: {e}");
+                exit(1);
+            }
+        }
         Some("merge-jsonl") => {
             let [_, ours, base, theirs] = args.as_slice() else {
                 print_usage();
@@ -49,7 +56,7 @@ fn main() {
 }
 
 fn usage() -> &'static str {
-    "usage: abacus run [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>"
+    "usage: abacus run [repo-path]\n       abacus drain [repo-path]\n       abacus land [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>"
 }
 
 fn print_usage() {
@@ -174,22 +181,68 @@ fn probe_bead_outcome(repo: &Path, bead_id: &str) -> Result<BeadOutcome, String>
     parse_bead_outcome(&bead_state)
 }
 
-fn cmd_run(repo: &Path) -> Result<(), String> {
-    let repo = repo
-        .canonicalize()
-        .map_err(|e| format!("cannot resolve repo path {}: {e}", repo.display()))?;
-    let repo_str = repo.to_string_lossy().into_owned();
+enum DispatchCycle {
+    Empty,
+    Completed,
+    ClaimLost(String),
+}
 
-    let ready = capture("br", &["ready", "--json"], Some(&repo))?;
+fn resolve_repo(repo: &Path) -> Result<PathBuf, String> {
+    repo.canonicalize()
+        .map_err(|e| format!("cannot resolve repo path {}: {e}", repo.display()))
+}
+
+fn cmd_run(repo: &Path) -> Result<(), String> {
+    let repo = resolve_repo(repo)?;
+    let repo_str = repo.to_string_lossy().into_owned();
+    match dispatch_cycle(&repo, &repo_str, &BTreeSet::new(), false)? {
+        DispatchCycle::Empty => {
+            println!("no ready beads in {repo_str}; nothing to dispatch");
+            Ok(())
+        }
+        DispatchCycle::Completed => Ok(()),
+        DispatchCycle::ClaimLost(_) => unreachable!("run treats claim failures as errors"),
+    }
+}
+
+fn cmd_drain(repo: &Path) -> Result<(), String> {
+    let repo = resolve_repo(repo)?;
+    let repo_str = repo.to_string_lossy().into_owned();
+    let mut lost_claims = BTreeSet::new();
+
+    loop {
+        match dispatch_cycle(&repo, &repo_str, &lost_claims, true)? {
+            DispatchCycle::Empty => {
+                println!("no ready beads in {repo_str}; nothing to dispatch");
+                return Ok(());
+            }
+            DispatchCycle::Completed => {}
+            DispatchCycle::ClaimLost(bead_id) => {
+                lost_claims.insert(bead_id);
+            }
+        }
+    }
+}
+
+fn dispatch_cycle(
+    repo: &Path,
+    repo_str: &str,
+    lost_claims: &BTreeSet<String>,
+    reselect_after_claim_failure: bool,
+) -> Result<DispatchCycle, String> {
+    let ready = capture("br", &["ready", "--json"], Some(repo))?;
     let beads = parse_ready(&ready)?;
-    let Some(bead) = select_bead(&beads) else {
-        println!("no ready beads in {repo_str}; nothing to dispatch");
-        return Ok(());
+    let claimable: Vec<_> = beads
+        .into_iter()
+        .filter(|bead| !lost_claims.contains(&bead.id))
+        .collect();
+    let Some(bead) = select_bead(&claimable) else {
+        return Ok(DispatchCycle::Empty);
     };
     let default_branch_ref = capture(
         "git",
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        Some(&repo),
+        Some(repo),
     )?;
     let default_branch = default_branch_ref
         .trim()
@@ -201,7 +254,16 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
                 default_branch_ref.trim()
             )
         })?;
-    capture("br", &["update", &bead.id, "--claim"], Some(&repo))?;
+    if let Err(error) = capture("br", &["update", &bead.id, "--claim"], Some(repo)) {
+        if reselect_after_claim_failure {
+            eprintln!(
+                "claim for {} failed; reselecting another ready bead: {error}",
+                bead.id
+            );
+            return Ok(DispatchCycle::ClaimLost(bead.id.clone()));
+        }
+        return Err(error);
+    }
     println!("selected {} — {}", bead.id, bead.title);
 
     let agent_name = sanitize_agent_name(&bead.id);
@@ -214,7 +276,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
                 "worktree",
                 "create",
                 "--cwd",
-                &repo_str,
+                repo_str,
                 "--branch",
                 &branch,
                 "--label",
@@ -259,14 +321,14 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         };
         println!("{}", settled.trim_end());
 
-        let initial_outcome = probe_bead_outcome(&repo, &bead.id)?;
+        let initial_outcome = probe_bead_outcome(repo, &bead.id)?;
         if initial_outcome == BeadOutcome::NeverEngaged {
             eprintln!("worker never engaged after startup prompt; retrying once");
         }
         let (retry_settled, outcome) = retry_never_engaged_once(
             initial_outcome,
             || capture("herdr", &prompt_args, None),
-            || probe_bead_outcome(&repo, &bead.id),
+            || probe_bead_outcome(repo, &bead.id),
         )?;
         if let Some(retry_settled) = retry_settled {
             println!("{}", retry_settled.trim_end());
@@ -317,7 +379,8 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     lane_result.map_err(|error| {
         let duration = format_lane_duration(lane_started.elapsed().as_secs());
         format!("{error} after {duration}")
-    })
+    })?;
+    Ok(DispatchCycle::Completed)
 }
 
 /// Run a command, capture stdout; a non-zero exit becomes an error carrying
@@ -394,6 +457,8 @@ mod tests {
     #[test]
     fn usage_text_describes_the_run_command() {
         assert!(usage().contains("abacus run"));
+        assert!(usage().contains("abacus land"));
+        assert!(usage().contains("abacus drain"));
     }
 
     #[test]
