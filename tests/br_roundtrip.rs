@@ -673,6 +673,122 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
 
 #[cfg(unix)]
 #[test]
+fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engaged_worker() {
+    let ws = TempWorkspace::new("transient-outcome-probe");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker survives transient outcome probe"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_br = fake_bin.join("br");
+    let fake_herdr = fake_bin.join("herdr");
+    let prompt_attempts = ws.0.join("prompt-attempts");
+    let probe_attempts = ws.0.join("probe-attempts");
+    let prompt_settled = ws.0.join("prompt-settled");
+    let failed_probe = ws.0.join("failed-probe");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "transient-probe-workspace" },
+            "root_pane": { "pane_id": "transient-probe-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"show\" ] && [ -f '{}' ]; then\n\
+               printf 'probe\\n' >> '{}'\n\
+               if [ ! -f '{}' ]; then\n\
+                 : > '{}'\n\
+                 exit 7\n\
+               fi\n\
+             fi\n\
+             exec '{}' \"$@\"\n",
+            prompt_settled.display(),
+            probe_attempts.display(),
+            failed_probe.display(),
+            failed_probe.display(),
+            find_on_path("br").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'attempt\\n' >> '{}'\n\
+               cd '{}'\n\
+               if [ \"$(wc -l < '{}')\" -eq 1 ]; then\n\
+                 br update '{}' --status open\n\
+               else\n\
+                 br close '{}'\n\
+               fi\n\
+               : > '{}'\n\
+             fi\n",
+            lane_json,
+            prompt_attempts.display(),
+            ws.0.display(),
+            prompt_attempts.display(),
+            bead.id,
+            bead.id,
+            prompt_settled.display(),
+        ),
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr] {
+        let mut permissions = std::fs::metadata(fake_program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(fake_program, permissions).unwrap();
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(prompt_attempts).unwrap(),
+        "attempt\nattempt\n",
+        "a recovered NeverEngaged probe must feed the existing re-prompt path"
+    );
+    assert_eq!(
+        std::fs::read_to_string(probe_attempts).unwrap(),
+        "probe\nprobe\nprobe\n",
+        "one failed probe, its retry, and the post-re-prompt probe are expected"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker() {
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
