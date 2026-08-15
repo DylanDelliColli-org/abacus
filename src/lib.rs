@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(format_lane_duration(4 * 60 + 7), "4m07s");
     }
 
-    // Captured live from `br ready --json` in this repository, 2026-08-13.
+    // Representative `br 0.3.x ready --json` output with inline labels.
     const BR_READY_FIXTURE: &str = r#"[
       {
         "created_at": "2026-08-13T13:58:29.876780198Z",
@@ -217,6 +217,7 @@ mod tests {
         "description": "Write CONSTRAINTS.md at the repo root.",
         "id": "abacus-vkd",
         "issue_type": "task",
+        "labels": ["documentation"],
         "priority": 2,
         "status": "open",
         "title": "CONSTRAINTS.md: carry the four measured findings",
@@ -232,6 +233,7 @@ mod tests {
         let beads = parse_ready(BR_READY_FIXTURE).unwrap();
         assert_eq!(beads.len(), 1);
         assert_eq!(beads[0].id, "abacus-vkd");
+        assert_eq!(beads[0].labels, ["documentation"]);
         assert_eq!(beads[0].priority, 2);
         assert_eq!(
             beads[0].title,
@@ -264,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_skips_operator_seat_beads() {
+    fn selection_skips_operator_seat_beads_from_ready_labels() {
         let beads = parse_ready(
             r#"[
               {"id":"abacus-operator","title":"operator milestone","priority":0,"labels":["seat:operator"]},

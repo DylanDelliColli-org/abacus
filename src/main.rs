@@ -10,9 +10,9 @@ use std::process::{Command, exit};
 use std::time::Instant;
 
 use abacus::{
-    BeadOutcome, OPERATOR_SEAT_LABEL, dispatch_prompt, format_lane_duration,
-    is_agent_prompt_stalled, is_dirty_worktree_remove_error, parse_bead_outcome, parse_ready,
-    parse_worktree_created, sanitize_agent_name, select_bead, should_reap_lane, version_string,
+    BeadOutcome, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
+    is_dirty_worktree_remove_error, parse_bead_outcome, parse_ready, parse_worktree_created,
+    sanitize_agent_name, select_bead, should_reap_lane, version_string,
 };
 
 fn main() {
@@ -156,22 +156,7 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
     let repo_str = repo.to_string_lossy().into_owned();
 
     let ready = capture("br", &["ready", "--json"], Some(&repo))?;
-    let mut beads = parse_ready(&ready)?;
-    let operator_ready = capture(
-        "br",
-        &["ready", "--label", OPERATOR_SEAT_LABEL, "--json"],
-        Some(&repo),
-    )?;
-    let operator_beads = parse_ready(&operator_ready)?;
-    for bead in &mut beads {
-        let has_operator_label = bead.labels.iter().any(|label| label == OPERATOR_SEAT_LABEL);
-        let is_operator_ready = operator_beads
-            .iter()
-            .any(|operator_bead| operator_bead.id == bead.id);
-        if is_operator_ready && !has_operator_label {
-            bead.labels.push(OPERATOR_SEAT_LABEL.to_owned());
-        }
-    }
+    let beads = parse_ready(&ready)?;
     let Some(bead) = select_bead(&beads) else {
         println!("no ready beads in {repo_str}; nothing to dispatch");
         return Ok(());
