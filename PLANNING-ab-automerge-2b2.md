@@ -534,3 +534,137 @@ Remaining verify-at-implementation items (not open questions): live-PR
 `mergeable` poll behavior (first land integration test observes it),
 actual CI durations (first two workflow runs), claim behavior under
 concurrent drains (absorbed by D3's reselect defense either way).
+
+---
+
+## TEST-STRATEGY
+
+Produced by a columbo-type subagent, 2026-08-15. **Measured baseline: 5.36s warm wall clock** for `cargo test` (45 tests: lib units 17 @ 0.00s, bin units 7 @ 0.00s, `br_roundtrip` 15 @ 5.08s, `merge_jsonl` 2 @ 0.00s, `shim` 2 @ 0.18s, `version` 2 @ 0.00s — `br_roundtrip`'s real-`br` calls are 95% of the suite). **Remaining budget: 24.64s** against `FULL_SUITE_WALL_CLOCK_BUDGET_SECONDS = 30`. Every runtime in the matrix below is **ESTIMATED**; only the 5.36s baseline is measured.
+
+Three probes were run to make the fixture assertions concrete rather than guessed, and their outputs are the fixture literals the matrix cites:
+
+- `gh pr view 17 --json statusCheckRollup,mergeable,mergeStateStatus,headRefName,headRefOid` → `{"headRefName":"lane/ab-mk9","headRefOid":"3f19f98d...","mergeStateStatus":"UNKNOWN","mergeable":"UNKNOWN","statusCheckRollup":[]}`, **exit 0**. Confirms D5's primitive: the no-CI case is an empty array at exit 0, unlike `gh pr checks`'s exit 1.
+- `gh pr view 14148 --repo cli/cli --json statusCheckRollup,...` → `mergeable: MERGEABLE`, `mergeStateStatus: BLOCKED`, 18 rollup entries shaped `{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE","workflowName":"Lint",...}`. This is the populated-rollup fixture shape.
+- `br list --status closed --json` → `{"issues":[…],"total":…}`. Confirms RESEARCH: the envelope differs from `br ready --json`, so a sibling parser cannot copy `parse_ready`.
+
+**Layering rationale.** Gate policy is pure and goes in `src/land.rs` units over JSON fixtures — cheap, exhaustive, and where the branch explosion (rollup states × mergeable states × local-leg result) belongs. Integration coverage is placed only at seams where two systems meet and the unit layer is structurally unable to prove the claim: **SHA identity between what was validated and what was merged** (only real git produces that), **ordering and base-movement across two landings** (only a real repo has a post-merge main), and **the process-level negative space** (a call log is the only place "`pr merge` never happened" can be observed). Integration tests use the fake-CLI harness at `tests/br_roundtrip.rs:249-306` extended to a fake `gh` and a fake `br` with real `git` — CI-portable. Two tests need real `br` and are local-only, and are marked as such.
+
+**New files:** `tests/land.rs` (fake gh + fake br + real git, CI-portable) and `tests/drain.rs` (fake herdr + fake br, CI-portable). New land tests do **not** go in `tests/br_roundtrip.rs`, because that binary's `br()` helper panics when `br` is absent (`:35`, `:62`) and would drag CI-portable coverage into the local-only set.
+
+### Story-by-test matrix
+
+| ID | Story / decision | Layer | Extends or new | Assertion (concrete) | Est. |
+|---|---|---|---|---|---|
+| T1 | S1, D5 | unit | new — `src/land.rs` | `{"statusCheckRollup":[],"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}` → `CiState::Absent`, and `Absent != Red` | 0.00s |
+| T2 | S1, S8, D5, D10 | unit | new — `src/land.rs` | Eligibility on `Absent` → refusal whose reason contains "no CI"; eligibility on a `FAILURE` rollup → `Park`, **not** refusal. The pairing is what proves the distinction is real | 0.00s |
+| T3 | S1, S8, D10 | integration | new — `tests/land.rs` | `abacus land` against a repo whose candidate PR has `statusCheckRollup: []` exits non-zero with a CI-absence message, and the call log shows **no** `git worktree add`, **no** `git push`, **no** `gh pr merge` — refusal precedes side effects | 0.25s |
+| T4 | S2, D6, D7, D9 | integration | new — `tests/land.rs` | Happy cycle, main ahead by one commit: after `abacus land --once`, `git log --format=%P` on the branch head shows a two-parent merge whose second parent is `origin/main`'s tip; the local-leg commands appear in the log before the push; and the single `gh pr merge --merge --match-head-commit <SHA>` call's SHA equals the branch head SHA after the update. **Only test that proves validated SHA and merged SHA are the same object** | 0.45s |
+| T5 | S2, S4, D7 | integration | new — `tests/land.rs` | Local leg fails (fake `cargo clippy` shim exits 1) after a clean update → `gh pr comment` posted, **no** `gh pr merge`, and the branch is not pushed for merge. Distinct from T15: this is the local leg, T15 is the remote leg | 0.40s |
+| T6 | S2, D6 | unit | new — `src/land.rs` | The update argv builder emits `git merge origin/<default>` with no `-X ours`, no `-X theirs`, no `--strategy-option` for any input | 0.00s |
+| T7 | S3, D2 | integration | new — `tests/land.rs` | Two candidates: PR2's update merge commit has PR1's **merge commit** as its second parent, proving PR2 revalidated against the post-merge base, not merely that the two merges were logged in order | 0.60s |
+| T8 | S3, D2 | integration | new — `tests/land.rs` | Fake gh reports `CLEAN` at gate time and `BEHIND` at the pre-merge recheck → no merge; the log shows a second update + second CI wait. Makes D2's stated sole-merger assumption safe when violated rather than silently landing stale-validated code | 0.45s |
+| T9 | S3, D4 | unit | new — `src/land.rs` | gh gives `lane/ab-a`, `lane/ab-b`, `feature/manual`; br closed gives `ab-a`, `ab-c` → candidates == `[ab-a]`. Non-lane branch excluded; open-bead lane excluded | 0.00s |
+| T10 | S3, D4 | unit | new — `src/land.rs` | The real `{"issues":[{"id":"ab-mk9",…}],"total":N}` envelope parses to ids; a bare `[…]` array is an error, so a parser copied from `parse_ready` fails loudly | 0.00s |
+| T11 | S3 (RESEARCH race 1) | unit | new — `src/land.rs` | Closed bead `ab-c` with no open PR → enumeration returns `Ok` with `ab-c` absent, **not** `Err` | 0.00s |
+| T12 | S3 (RESEARCH race 1) | integration | new — `tests/land.rs` | Same at process level: two closed beads, one PR → exit 0, the PR merges, the PR-less bead does not abort the cycle | 0.30s |
+| T13 | success metric, D3 | integration | new — `tests/br_roundtrip.rs` (**local-only**, real `br`) | Three ready beads, fake herdr closes each on prompt → three dispatch cycles run, then `abacus drain` exits 0 on an empty ready set. Nothing else proves the loop terminates or handles more than one bead; the epic's success metric is literally this | 0.70s |
+| T14 | D3 | integration | new — `tests/drain.rs` | Fake `br` fails `update <id1> --claim` and succeeds for `<id2>` → lane opens for `id2`, exit 0, no abort. Makes claim atomicity a non-blocking property | 0.35s |
+| T15 | S4, S7, D9 | integration | new — `tests/land.rs` | Rollup with a `FAILURE` conclusion → `gh pr comment` carries evidence, `gh pr merge` **never** appears, PR left open, and the fake `br` log contains **no** write verb (`update`/`close`/`label`) — D9's "no tracker writes on park" | 0.40s |
+| T16 | S4, D9 | unit | new — `src/land.rs` | Park body for a clippy failure contains the bead id, the head SHA, the string `clippy`, and the captured stderr excerpt. The comment *is* the morning-review evidence; a generic body silently defeats S4 | 0.00s |
+| T17 | **S5 (regression)** | integration | **EXTENDS** `abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead`, `tests/br_roundtrip.rs:422` | Add a logging fake `gh` to that test's PATH; assert the gh call log is **empty** after a full `abacus run` cycle. ~3 lines. S5's "default unchanged" is exactly the guarantee that erodes when someone later adds a PR check to the run path | +0.02s |
+| T18 | S5, D2, D3 | unit | **EXTENDS** `usage_text_describes_the_run_command`, `src/main.rs:336` | `usage()` names `run`, `land`, and `drain`; `abacus_without_a_command_prints_usage` (`br_roundtrip.rs:943`) passes unchanged | +0.00s |
+| T19 | S6, D8 | unit | new — `src/land.rs` | Layer stack records calls: a domain driver that resolves means rerere and the agent are **never** invoked. D8's "cheapest first" is the entire point — dispatching an agent first burns a lane per conflict | 0.00s |
+| T20 | S6, D8 | unit | new — `src/land.rs` | After one failed agent attempt the outcome is `Park`; a second dispatch never occurs. Unbounded retry is an overnight-run-consuming loop | 0.00s |
+| T21 | S6, S4, D8 | unit | new — `src/land.rs` | A resolution whose local leg fails → `Park`, never `Merge`. S6's explicit clause and the reason the operator's override is safe | 0.00s |
+| T22 | S6, D8 layer 1 | integration | new — `tests/land.rs` | Main and branch both append to `.beads/issues.jsonl`; the `merge.beads-jsonl.driver` is configured in the landing worktree → update resolves, local leg runs, merge proceeds, and the fake `herdr` log is **empty**. This is the one conflict class RESEARCH shows actually occurs here (main's inter-PR commits are overwhelmingly tracker-only), so it is the highest-probability real conflict | 0.50s |
+| T23 | S6, D8 layers 3-4 | integration | new — `tests/land.rs` | Conflicting `src/main.rs` hunks, no driver, no rerere entry → fake herdr logs `worktree open` + `agent prompt` **exactly once**, the fake agent leaves the conflict unresolved, park comment posted, no merge. Bounds the agent layer at the process level and proves park is reachable from the deepest layer | 0.55s |
+| T24 | S6, D8 layer 2 | integration | new — `tests/land.rs` | Two PRs conflicting on the same hunk: the resolution recorded during PR1's landing replays for PR2 with **no** agent dispatch. Marginal — see deferral candidates | 0.60s |
+| T25 | S7, D5 | unit | new — `src/land.rs` | Two `CheckRun`s, both `status: COMPLETED` / `conclusion: SUCCESS` → `CiState::Green` | 0.00s |
+| T26 | S7, S4, D5 | unit | new — `src/land.rs` | `name:"lint"` FAILURE alongside `name:"test"` SUCCESS → `Red`, and the evidence string contains `lint`. One red among many greens must not average to green, and park evidence must name what failed | 0.00s |
+| T27 | S7, D5 | unit | new — `src/land.rs` | One COMPLETED/SUCCESS plus one `{"status":"IN_PROGRESS","conclusion":null}` → `Pending`. This is the exit-8-vs-exit-1 distinction D5 replaces with JSON | 0.00s |
+| T28 | S7, D5 | unit | new — `src/land.rs` | A `FAILURE` alongside an `IN_PROGRESS` → `Red`, not `Pending`. Kept separate from T26/T27 deliberately: folding it leaves the precedence rule unproven while both neighbours still pass, and the queue polls for minutes on a doomed head | 0.00s |
+| T29 | S7, D5 | unit | new — `src/land.rs` | `SKIPPED` and `NEUTRAL` conclusions alongside SUCCESS → `Green`. A path-filtered skipped job is normal; treating it as red parks every PR forever | 0.00s |
+| T30 | S7, D5 | unit | new — `src/land.rs` | `{"__typename":"StatusContext","context":"ci/legacy","state":"SUCCESS"}` mixed with a `CheckRun` → `Green`; `state:"FAILURE"` → `Red`. The rollup is a GraphQL union; a CheckRun-only parser drops legacy statuses or errors on the whole payload. **Verify the exact `StatusContext` field names against a live mixed rollup at implementation** — not probed | 0.00s |
+| T31 | S7, D5 | unit | new — `src/land.rs` | The literal PR-17 probe output (`mergeable: "UNKNOWN"`, `mergeStateStatus: "UNKNOWN"`) → `Unknown`; never treated as mergeable. RESEARCH's lazily-computed pitfall | 0.00s |
+| T32 | S6, S7, D5 | unit | new — `src/land.rs` | `mergeable: "CONFLICTING"` → `Conflicting`, routing to D8 rather than to merge or park | 0.00s |
+| T33 | S7, D5 | integration | new — `tests/land.rs` | Fake gh returns IN_PROGRESS on the first `pr view` and SUCCESS on the second → exactly two `pr view` calls, then a merge; the poll delay is injected, not a real sleep. Proves the wait path terminates into a merge — the most likely false-park in production | 0.35s |
+| T34 | S7, D5 | integration | new — `tests/land.rs` | First `pr view` `mergeable: UNKNOWN`, second `MERGEABLE`/`CLEAN` → proceeds; **no merge attempted while UNKNOWN**. This is where ARCHITECTURE's "verify at implementation" item for live-PR poll behavior actually lands | 0.30s |
+| T35 | S7, D5 | unit | new — `src/main.rs` bin units | `capture_status("sh", ["-c","printf out; printf err >&2; exit 8"])` → code 8, stdout `out`, stderr `err`. The exit-8-vs-exit-1 distinction `capture()` destroys; RESEARCH's single most concrete engine change | 0.01s |
+| T36 | **S5/D5 (regression, CRITICAL)** | unit | new — `src/main.rs` bin units | `capture()` on a non-zero exit still returns `Err` containing the command line and the trimmed stderr. **Nothing currently proves `capture`'s contract** — there is no existing unit test for it — yet D5 promises its eight call sites do not churn. A refactor that unifies the two functions would silently change eight call sites' error strings | 0.01s |
+| T37 | S2, S7, D5 | unit | new — `src/land.rs` | Only `(Green, Clean, LocalPass)` yields `Merge`, and the outcome carries the validated head SHA. Given its own test because it is the sole merge-producing path | 0.00s |
+| T38 | S2, S4, S7, D5 | unit | new — `src/land.rs` | Row-named table for every non-merge combination: `(Red,Clean,Pass)→Park`, `(Green,Clean,LocalFail)→Park`, `(Pending,Clean,Pass)→Wait`, `(Green,Behind,Pass)→Update`, `(Green,Conflicting,*)→Resolve`. Each row asserted individually with the row name in the failure message | 0.00s |
+| T39 | S8 | unit | new — `src/land.rs` or a small `tests/ci_workflow.rs` | `.github/workflows/ci.yml` exists and its toolchain pin string equals `Cargo.toml`'s `rust-version`; the file contains `cargo clippy --all-targets --all-features -- -D warnings` and `cargo fmt --check`. **The pin agreement is the only assertion here with unique value** — the two files drifting apart is a real, silent, recurring failure. Dependency-free string matching; no YAML parser is added to a two-dependency crate for this | 0.00s |
+| T40 | S8 | unit | new — `src/land.rs` | The `br`-presence guard predicate returns false for a PATH with no `br`, true for one containing it. Marginal — see deferral candidates | 0.00s |
+| T41 | **S9** | integration | new — fixture variation of T8 | One land integration test's fixture repo uses default branch `trunk`, not `main`, proving nothing in the land path hardcodes `main`. Zero marginal cost — it is a fixture parameter, not a new test | +0.00s |
+| T42 | **S9** — GATED | unit | **EXTENDS** `dispatch_prompt_carries_bead_identity_and_protocol`, `src/lib.rs:348` | A repo whose default branch is `develop` produces a prompt containing `gh pr create --base develop`. **Gated: ARCHITECTURE locks no decision on the `--base main` hardcode** (`src/lib.rs:190`), which RESEARCH flagged as a live S9 violation. D13 asserts "prompt text does not change" — that holds for the AGENTS.md edit but not for this. DECOMPOSITION needs a decision before this test is authored | +0.00s |
+| T43 | **S9** — GATED | integration | **EXTENDS** `tests/shim.rs` | The shim resolves the real `br` via `BR_REAL` (or PATH search excluding self) rather than the hardcoded `/home/ddc/.local/bin/br` (`bin/br-shim:5`), proven by pointing it at a fake `br`. **Gated on the same missing decision**; RESEARCH notes the shim "cannot pass on any machine but this one", which is both an S9 violation and a CI blocker | +0.10s |
+| T44 | D12 | integration | new — `tests/land.rs` | Two candidates where fake gh reports the first already merged → it is not re-merged, the second merges, exit 0; and no state file appears anywhere under the repo. D12's falsifiable halves are "nothing is persisted" and "a partially-drained queue re-derives correctly" | 0.40s |
+
+**Cross-cutting invariant, not a test.** `tests/land.rs` defines `assert_no_forbidden_flags(&gh_log, &git_log)` and every test in the file calls it in teardown. It asserts the gh argv never contains `--admin`, `--auto`, or `update-branch`, and the git argv never contains `--force`, `--force-with-lease`, `-f`, `-X ours`, `-X theirs`, or `--strategy-option`. This is deliberately an invariant applied across all paths rather than one dedicated test — a single test proves the flags are absent from one path, whereas the helper proves it from every path the suite exercises, including ones added later.
+
+### Negative-space cases
+
+What must **not** happen, and where each is proven.
+
+| Must never happen | Proven by | Why it is the assertion that matters |
+|---|---|---|
+| A red PR merges | T15 (`gh pr merge` absent from the call log on a FAILURE rollup), T26 + T28 (policy: any FAILURE → `Red`, even alongside pending), T38 (`(Red,Clean,Pass)→Park`) | The single most important property in the epic. T26/T28 prove the classifier can't be fooled, T38 proves the decision table routes `Red` away from merge, T15 proves the process actually doesn't call merge |
+| `--admin` or `--auto` appears in any gh invocation | `assert_no_forbidden_flags`, run in every `tests/land.rs` test | `--admin` bypasses branch requirements and would let a red PR land; `--auto` delegates ordering to GitHub, contradicting S3 |
+| A force-push occurs | `assert_no_forbidden_flags` (`--force`, `--force-with-lease`, `-f`) | D6 rejects rebase precisely because force-push orphans in-flight CI and invalidates review state |
+| `gh pr update-branch` is invoked | `assert_no_forbidden_flags` | D6 rejects it — no conflict hook, so S6 would have nowhere to stand |
+| `-X ours` / `-X theirs` / `--strategy-option` in the update path | T6 (unit, argv builder) **and** `assert_no_forbidden_flags` (all integration paths) | RESEARCH's highest-severity silent-wrong risk; guarded at both layers because the failure is undetectable by any other test |
+| Park writes the tracker | T15 (fake `br` log contains no `update`/`close`/`label`) | D9 says the bead stays closed and park is a `gh pr comment` only. The half of T15 most likely to be dropped under time pressure |
+| A merge lands a SHA other than the validated one | T4 (merged SHA == post-update branch head), T8, T12 | The compare-and-swap property. Without it, "unvalidated code cannot land" degrades to "usually doesn't" |
+| A worker's post-close push lands unvalidated | T8's sibling case — fake gh's `pr merge` fails with a head-mismatch on the first call, and the log shows a second update + revalidate + a merge at the **new** SHA | RESEARCH race 4. The loop-back converts a race into a retry instead of a bad landing |
+| An agent is dispatched before cheaper resolution layers | T19 (rerere and agent never invoked when a domain driver resolves), T22 (fake herdr log empty on a `.beads/issues.jsonl` conflict) | D8's "cheapest first"; dispatching first burns a herdr lane per conflict |
+| More than one agent resolution attempt | T20 (policy), T23 (exactly one `agent prompt` in the call log) | An unbounded conflict-resolution retry consumes the overnight run |
+| A conflict resolution that fails validation merges | T21 (policy → `Park`), T23 (park comment, no merge) | S6's explicit clause; the case that makes the operator's park-first override safe |
+| `abacus run` touches gh at all | T17 (fake gh call log empty across a full run cycle) | S5's "default unchanged". Regression-class: `cmd_run` is existing code this epic modifies |
+| Land takes any side effect before refusing a no-CI repo | T3 (no `git worktree add`, no push, no merge in the log) | S8 eligibility as a real gate, not a message printed after the damage |
+| A closed bead with no PR aborts the drain | T11 (`Ok`, not `Err`), T12 (exit 0, other candidate still merges) | RESEARCH race 1. A queue that errors here stops the overnight run on a normal event |
+| A claim failure aborts the drain | T14 (reselect, exit 0) | D3's defense; without it an overnight run dies at bead 1 |
+| Queue state is persisted | T44 (no new file appears under the repo) | D12 claims recovery is recomputation; "nothing is written" is the falsifiable half |
+
+### Budget arithmetic
+
+| Block | Tests | Est. added |
+|---|---|---|
+| Unit — `src/land.rs` policy + `src/main.rs` capture (T1, T2, T6, T9, T10, T11, T16, T19-T21, T25-T32, T35-T40) | 24 | 0.05s |
+| Integration — `tests/land.rs` (T3, T4, T5, T7, T8, T12, T15, T22, T23, T24, T33, T34, T41, T44) | 14 | 5.55s |
+| Integration — `tests/drain.rs` (T14) | 1 | 0.35s |
+| Integration — `tests/br_roundtrip.rs` (T13 new, T17 extension) | 2 | 0.72s |
+| Extensions — `src/lib.rs` (T42), `src/main.rs` units (T18), `tests/shim.rs` (T43) | 3 | 0.10s |
+| **Total added (ESTIMATED, serial upper bound)** | **44** | **6.77s** |
+
+**Measured 5.36s + estimated 6.77s = 12.13s against the 30s budget. Headroom: 17.87s. Nothing is dropped.**
+
+Two qualifications. First, 6.77s is a **serial upper bound**: cargo parallelises within a binary, so real wall clock is more likely ~9-10s total. Second, the budget measures run time; two new integration binaries add link time on cold builds — not in the 30s figure, and DECOMPOSITION should not be surprised by it.
+
+Because there is headroom, nothing was cut. If a later substage must trim, the two lowest-value-per-second items are **T24** (rerere replay — an accelerator whose failure mode is slowness, not incorrectness) and **T40** (near-trivial guard predicate). **T13** is the most expensive single test and also the one that proves the epic's success metric — the last candidate for cuts, not the first.
+
+### Deliberately untested
+
+| Item | Disposition | Why |
+|---|---|---|
+| `.github/workflows/ci.yml` actually running; cold vs cached durations | **[no-test] verify-by-first-run** | A test cannot assert what GitHub's runners do. The acceptance criterion belongs on the S8 bead: first two runs green, durations recorded in bead notes |
+| The portable subset genuinely runs without `br` | **[no-test in-suite] — the workflow's own green run is the assertion** | The runner has no `br`; a green `cargo test` there *is* the proof. T40 covers only the guard predicate's logic |
+| D13's AGENTS.md amendment | **[no-test], docs-only** | Prose guards rot; a string-absence test fails on any legitimate rewording and teaches a worker to edit the test |
+| `allow_update_branch` API behavior; who deletes merged lane branches | **already resolved by ARCHITECTURE** | Mooted by D6; superseded by D9 |
+
+### Tripwire self-check
+
+**1. Folded cases.** Four folds specifically avoided, one accepted:
+- T26 / T27 / T28 are three tests, not one — folding precedence into either neighbour leaves the rule unproven while both neighbours still pass.
+- T37 / T38 split so the sole merge-producing path has its own named test.
+- T11 / T12 split so the no-PR skip is proven at policy and process layers, which fail for different reasons.
+- T5 / T15 split so each validation leg's park path is independently exercised.
+- **Accepted fold: T4** (update + local leg + push + match-head merge in one test) — the SHA-identity assertion is only meaningful if all four happened in order; mitigated because T5, T15, T8, T34 each isolate one leg's failure.
+
+**2. Deleted tests for live code — zero deletions proposed; one named hazard.** All five touchpoints on existing tests (T17, T18, T42, T43, and `br_roundtrip.rs:943`) are additive extensions. DECOMPOSITION carries this as an explicit constraint: **no existing test is retired by this epic; a worker who finds one "superseded" surfaces it as a finding rather than deleting it.** The concrete hazard: `dispatch_prompt_carries_bead_identity_and_protocol` (`src/lib.rs:348-379`) — its `push < pr < close` positional assertion is the merge queue's entire admission predicate. Any bead touching `dispatch_prompt` must carry an acceptance criterion naming that assertion as preserved.
+
+**3. Thinned assertions — three named risks.**
+- **T7** can be weakened to "two merges in order", which a queue validating both against the *pre*-merge base would also satisfy. The ancestry assertion is the only form that proves S3.
+- **T15's negative half** (no `pr merge`, no `br` write verb) is the assertion, not the comment.
+- **Thinning-by-environment:** the skip guards for the 17 `br`-requiring tests could quietly turn local-only integration into "skipped everywhere". The skip-guard bead's acceptance must read: **on the operator host, `cargo test` still reports 45+ passed, 0 ignored** — the guard skips only when `br` is genuinely absent, and D7's local leg runs the full set.
+
+**Gaps surfaced for DECOMPOSITION.** Two S9 items RESEARCH flagged have no locked ARCHITECTURE decision, so T42 and T43 are gated: the `--base main` hardcode at `src/lib.rs:190`, and `bin/br-shim:5`'s hardcoded `real_br` path (also a CI-portability blocker for `tests/shim.rs`).
