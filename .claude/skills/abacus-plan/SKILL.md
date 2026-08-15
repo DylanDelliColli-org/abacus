@@ -250,6 +250,12 @@ the three coverage-loss tripwires:
 - tests deleted while their production behavior remains live; and
 - assertions thinned inside surviving test names.
 
+Also check every child's acceptance criteria for self-negating sweep
+clauses: an acceptance phrased as grep-to-zero — or any
+remove-every-occurrence order — must scope out test literals and
+protected assertions explicitly, or a worker satisfying acceptance
+deletes the very coverage the spec protects.
+
 Have the freshness producer review the beads without relying on planning
 conversation.
 
