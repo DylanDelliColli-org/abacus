@@ -7,8 +7,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use abacus::land::{
+    Candidate, CompositionResult, DecisionInput, Eligibility, LandDecision, LocalLeg, QueueState,
+    ValidationFailure, admission_red_park_body, decide, dequeue_park_body, enumerate_candidates,
+    parse_eligibility, parse_enqueue_result, parse_queue_state,
+};
 use abacus::{
     BeadOutcome, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
     is_dirty_worktree_remove_error, parse_bead_outcome, parse_ready, parse_worktree_created,
@@ -38,6 +44,20 @@ fn main() {
                 exit(1);
             }
         }
+        Some("land") => {
+            let (repo, once) = match parse_land_args(&args[1..]) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    eprintln!("abacus land: {error}");
+                    print_usage();
+                    exit(2);
+                }
+            };
+            if let Err(e) = cmd_land(&repo, once) {
+                eprintln!("abacus land: {e}");
+                exit(1);
+            }
+        }
         Some("merge-jsonl") => {
             let [_, ours, base, theirs] = args.as_slice() else {
                 print_usage();
@@ -56,11 +76,526 @@ fn main() {
 }
 
 fn usage() -> &'static str {
-    "usage: abacus run [repo-path]\n       abacus drain [repo-path]\n       abacus land [repo-path]\n       abacus merge-jsonl <ours> <base> <theirs>"
+    "usage: abacus run [repo-path]\n       abacus drain [repo-path]\n       abacus land [repo-path] [--once]\n       abacus merge-jsonl <ours> <base> <theirs>"
 }
 
 fn print_usage() {
     eprintln!("{}", usage());
+}
+
+fn parse_land_args(args: &[String]) -> Result<(PathBuf, bool), String> {
+    let mut repo = None;
+    let mut once = false;
+    for arg in args {
+        if arg == "--once" {
+            once = true;
+        } else if arg.starts_with('-') {
+            return Err(format!("unknown option {arg:?}"));
+        } else if repo.replace(PathBuf::from(arg)).is_some() {
+            return Err("expected at most one repository path".into());
+        }
+    }
+    Ok((repo.unwrap_or_else(|| ".".into()), once))
+}
+
+#[derive(serde::Deserialize)]
+struct RepoView {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+    #[serde(rename = "defaultBranchRef")]
+    default_branch_ref: DefaultBranchRef,
+}
+
+#[derive(serde::Deserialize)]
+struct DefaultBranchRef {
+    name: String,
+}
+
+fn land_repo_view(repo: &Path) -> Result<RepoView, String> {
+    let output = capture(
+        "gh",
+        &["repo", "view", "--json", "nameWithOwner,defaultBranchRef"],
+        Some(repo),
+    )?;
+    let view: RepoView = serde_json::from_str(&output)
+        .map_err(|e| format!("unparseable `gh repo view` output: {e}"))?;
+    if view.name_with_owner.trim().is_empty() || view.default_branch_ref.name.trim().is_empty() {
+        return Err("`gh repo view` returned an empty repository or default branch".into());
+    }
+    Ok(view)
+}
+
+fn cmd_land(repo: &Path, once: bool) -> Result<(), String> {
+    let repo = resolve_repo(repo)?;
+    let view = land_repo_view(&repo)?;
+    let ruleset_path = format!("repos/{}/rulesets", view.name_with_owner);
+    let rulesets = capture("gh", &["api", &ruleset_path], Some(&repo))?;
+    if let Eligibility::Ineligible { reason } = parse_eligibility(&rulesets)? {
+        return Err(format!("repository is ineligible: {reason}"));
+    }
+
+    loop {
+        land_cycle(&repo, &view, &mut land_poll_delay)?;
+        if once {
+            return Ok(());
+        }
+        land_poll_delay();
+    }
+}
+
+fn land_poll_delay() {
+    let millis = std::env::var("ABACUS_LAND_POLL_MILLIS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5_000);
+    if millis > 0 {
+        std::thread::sleep(Duration::from_millis(millis));
+    }
+}
+
+fn land_cycle<Delay>(repo: &Path, view: &RepoView, delay: &mut Delay) -> Result<(), String>
+where
+    Delay: FnMut(),
+{
+    capture("git", &["fetch", "origin"], Some(repo))?;
+    let open_prs = capture(
+        "gh",
+        &["pr", "list", "--state", "open", "--json", "headRefName"],
+        Some(repo),
+    )?;
+    let closed_beads = capture("br", &["list", "--json"], Some(repo))?;
+    let candidates = enumerate_candidates(&open_prs, &closed_beads)?;
+
+    for candidate in candidates {
+        land_candidate(repo, view, &candidate, delay)?;
+    }
+    Ok(())
+}
+
+fn land_candidate<Delay>(
+    repo: &Path,
+    view: &RepoView,
+    candidate: &Candidate,
+    delay: &mut Delay,
+) -> Result<(), String>
+where
+    Delay: FnMut(),
+{
+    match observe_queue_state(repo, view, &candidate.branch)? {
+        QueueState::Merged | QueueState::Queued => return Ok(()),
+        QueueState::Dequeued(reason) => {
+            let admitted_head_sha = candidate_head_sha(repo, candidate)?;
+            return resolve_once(repo, view, candidate, &admitted_head_sha, &reason, delay);
+        }
+        QueueState::Absent => {}
+    }
+
+    let admission = admit_candidate(repo, &view.default_branch_ref.name, candidate)?;
+    let decision = decide(DecisionInput::Admission {
+        composition: admission.composition,
+        local_leg: admission.local_leg.clone(),
+        admitted_head_sha: admission.admitted_head_sha.clone(),
+    });
+
+    match decision {
+        LandDecision::Enqueue { .. } => {
+            enqueue_candidate(repo, &candidate.branch)?;
+            watch_enqueued(
+                repo,
+                view,
+                candidate,
+                &admission.admitted_head_sha,
+                0,
+                delay,
+            )
+        }
+        LandDecision::Park => {
+            let LocalLeg::Fail(failure) = &admission.local_leg else {
+                return Err(format!(
+                    "policy parked {} without local failure evidence",
+                    candidate.branch
+                ));
+            };
+            let body =
+                admission_red_park_body(&candidate.bead_id, &admission.admitted_head_sha, failure);
+            comment_on_candidate(repo, &candidate.branch, &body)
+        }
+        LandDecision::Resolve => {
+            let reason = format!(
+                "admission composition conflict with origin/{}",
+                view.default_branch_ref.name
+            );
+            resolve_once(
+                repo,
+                view,
+                candidate,
+                &admission.admitted_head_sha,
+                &reason,
+                delay,
+            )
+        }
+    }
+}
+
+fn enqueue_candidate(repo: &Path, branch: &str) -> Result<(), String> {
+    let result = capture_status("gh", &["pr", "merge", branch], Some(repo))?;
+    parse_enqueue_result(result)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn comment_on_candidate(repo: &Path, branch: &str, body: &str) -> Result<(), String> {
+    capture("gh", &["pr", "comment", branch, "--body", body], Some(repo)).map(|_| ())
+}
+
+fn watch_enqueued<Delay>(
+    repo: &Path,
+    view: &RepoView,
+    candidate: &Candidate,
+    admitted_head_sha: &str,
+    completed_attempts: u8,
+    delay: &mut Delay,
+) -> Result<(), String>
+where
+    Delay: FnMut(),
+{
+    loop {
+        match observe_queue_state(repo, view, &candidate.branch)? {
+            QueueState::Merged => return Ok(()),
+            QueueState::Queued | QueueState::Absent => delay(),
+            QueueState::Dequeued(reason) => {
+                return match decide(DecisionInput::Dequeued {
+                    attempts: completed_attempts,
+                }) {
+                    LandDecision::Resolve => {
+                        resolve_once(repo, view, candidate, admitted_head_sha, &reason, delay)
+                    }
+                    LandDecision::Park => {
+                        park_resolution(repo, candidate, admitted_head_sha, &reason, None)
+                    }
+                    LandDecision::Enqueue { .. } => {
+                        Err("dequeue policy unexpectedly requested enqueue".into())
+                    }
+                };
+            }
+        }
+    }
+}
+
+fn candidate_head_sha(repo: &Path, candidate: &Candidate) -> Result<String, String> {
+    let branch_ref = format!("origin/{}", candidate.branch);
+    let sha = capture("git", &["rev-parse", &branch_ref], Some(repo))?;
+    let sha = sha.trim();
+    if sha.is_empty() {
+        return Err(format!("empty head SHA for {}", candidate.branch));
+    }
+    Ok(sha.into())
+}
+
+fn resolution_prompt(candidate: &Candidate, default_branch: &str, reason: &str) -> String {
+    format!(
+        "You are the merge-queue resolution lane for bead {bead}, attempt 1 of 1, on the existing \
+         PR branch {branch}. Resolve this exception against the freshly fetched default branch \
+         {default_branch}: {reason}. This bead stays closed; do not run any br write command. \
+         Reconfirm the requested codex provider identity at every execution. Do not rebase, \
+         force-push, merge the PR, or delete its branch. Run the full test suite, clippy with \
+         warnings denied, and fmt check. Commit the resolution and push it from this lane to \
+         origin {branch}; abacus itself never pushes. If the exception cannot be resolved, leave \
+         the PR open and report the evidence.",
+        bead = candidate.bead_id,
+        branch = candidate.branch,
+    )
+}
+
+fn dispatch_resolution(
+    repo: &Path,
+    candidate: &Candidate,
+    default_branch: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let repo_arg = repo.to_string_lossy().into_owned();
+    let opened = capture(
+        "herdr",
+        &[
+            "worktree",
+            "open",
+            "--cwd",
+            &repo_arg,
+            "--branch",
+            &candidate.branch,
+            "--label",
+            &candidate.bead_id,
+            "--no-focus",
+        ],
+        None,
+    )?;
+    let lane = parse_worktree_created(&opened)?;
+    let agent_name = sanitize_agent_name(&format!("r-{}", candidate.bead_id));
+    capture(
+        "herdr",
+        &[
+            "agent",
+            "start",
+            &agent_name,
+            "--kind",
+            "codex",
+            "--pane",
+            &lane.pane_id,
+        ],
+        None,
+    )?;
+    let prompt = resolution_prompt(candidate, default_branch, reason);
+    capture(
+        "herdr",
+        &["agent", "prompt", &agent_name, &prompt, "--wait"],
+        None,
+    )?;
+    Ok(())
+}
+
+fn resolve_once<Delay>(
+    repo: &Path,
+    view: &RepoView,
+    candidate: &Candidate,
+    admitted_head_sha: &str,
+    reason: &str,
+    delay: &mut Delay,
+) -> Result<(), String>
+where
+    Delay: FnMut(),
+{
+    if let Err(error) = dispatch_resolution(repo, candidate, &view.default_branch_ref.name, reason)
+    {
+        return park_resolution(repo, candidate, admitted_head_sha, reason, Some(&error));
+    }
+
+    capture("git", &["fetch", "origin"], Some(repo))?;
+    let readmission = match admit_candidate(repo, &view.default_branch_ref.name, candidate) {
+        Ok(readmission) => readmission,
+        Err(error) => {
+            return park_resolution(repo, candidate, admitted_head_sha, reason, Some(&error));
+        }
+    };
+    let decision = decide(DecisionInput::Readmission {
+        composition: readmission.composition,
+        local_leg: readmission.local_leg.clone(),
+        admitted_head_sha: readmission.admitted_head_sha.clone(),
+        attempts: 1,
+    });
+    match decision {
+        LandDecision::Enqueue { .. } => {
+            enqueue_candidate(repo, &candidate.branch)?;
+            watch_enqueued(
+                repo,
+                view,
+                candidate,
+                &readmission.admitted_head_sha,
+                1,
+                delay,
+            )
+        }
+        LandDecision::Park => {
+            let detail = match &readmission.local_leg {
+                LocalLeg::Fail(failure) => Some(format!(
+                    "readmission failed in {}: {}",
+                    failure.tool,
+                    failure.stderr.trim()
+                )),
+                _ if readmission.composition == CompositionResult::Conflict => {
+                    Some("readmission still has a composition conflict".into())
+                }
+                _ => None,
+            };
+            park_resolution(
+                repo,
+                candidate,
+                admitted_head_sha,
+                reason,
+                detail.as_deref(),
+            )
+        }
+        LandDecision::Resolve => Err("readmission requested a second resolution attempt".into()),
+    }
+}
+
+fn park_resolution(
+    repo: &Path,
+    candidate: &Candidate,
+    admitted_head_sha: &str,
+    reason: &str,
+    detail: Option<&str>,
+) -> Result<(), String> {
+    let mut body = dequeue_park_body(&candidate.bead_id, admitted_head_sha, reason)?;
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        body.push_str("\n\nResolution evidence: ");
+        body.push_str(detail.trim());
+    }
+    comment_on_candidate(repo, &candidate.branch, &body)
+}
+
+const QUEUE_QUERY: &str = r#"query($owner:String!,$name:String!,$number:Int!,$branch:String!){repository(owner:$owner,name:$name){ref(qualifiedName:$branch){name} pullRequest(number:$number){state merged isInMergeQueue autoMergeRequest{enabledAt} mergeQueueEntry{id} timelineItems(last:1,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{reason}}}}}}"#;
+
+fn observe_queue_state(repo: &Path, view: &RepoView, branch: &str) -> Result<QueueState, String> {
+    let number = capture(
+        "gh",
+        &["pr", "view", branch, "--json", "number", "--jq", ".number"],
+        Some(repo),
+    )?;
+    let number = number.trim();
+    if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+        return Err(format!("unexpected PR number for {branch}: {number:?}"));
+    }
+    let (owner, name) = view.name_with_owner.split_once('/').ok_or_else(|| {
+        format!(
+            "unexpected GitHub repository name {:?}",
+            view.name_with_owner
+        )
+    })?;
+    let owner_arg = format!("owner={owner}");
+    let name_arg = format!("name={name}");
+    let number_arg = format!("number={number}");
+    let branch_arg = format!("branch={branch}");
+    let query_arg = format!("query={QUEUE_QUERY}");
+    let output = capture(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &query_arg,
+            "-F",
+            &owner_arg,
+            "-F",
+            &name_arg,
+            "-F",
+            &number_arg,
+            "-F",
+            &branch_arg,
+        ],
+        Some(repo),
+    )?;
+    parse_queue_state(&output)
+}
+
+#[derive(Debug)]
+struct Admission {
+    composition: CompositionResult,
+    local_leg: LocalLeg,
+    admitted_head_sha: String,
+}
+
+static ADMISSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn admission_worktree_path() -> PathBuf {
+    let sequence = ADMISSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "abacus-land-admission-{}-{started_at}-{sequence}",
+        std::process::id(),
+    ))
+}
+
+fn admit_candidate(
+    repo: &Path,
+    default_branch: &str,
+    candidate: &Candidate,
+) -> Result<Admission, String> {
+    let branch_ref = format!("origin/{}", candidate.branch);
+    let admitted_head_sha = candidate_head_sha(repo, candidate)?;
+    let worktree = admission_worktree_path();
+    if worktree.exists() {
+        return Err(format!(
+            "admission worktree path already exists: {}",
+            worktree.display()
+        ));
+    }
+    let worktree_arg = worktree.to_string_lossy().into_owned();
+    capture(
+        "git",
+        &["worktree", "add", "--detach", &worktree_arg, &branch_ref],
+        Some(repo),
+    )?;
+
+    let result = admit_in_worktree(&worktree, default_branch, &admitted_head_sha);
+    let cleanup = capture("git", &["worktree", "remove", &worktree_arg], Some(repo));
+    match (result, cleanup) {
+        (Ok(admission), Ok(_)) => Ok(admission),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(format!(
+            "admission succeeded but worktree cleanup failed: {cleanup_error}"
+        )),
+        (Err(error), Err(cleanup_error)) => Err(format!(
+            "{error}; admission worktree cleanup also failed: {cleanup_error}"
+        )),
+    }
+}
+
+fn admit_in_worktree(
+    worktree: &Path,
+    default_branch: &str,
+    admitted_head_sha: &str,
+) -> Result<Admission, String> {
+    let default_ref = format!("origin/{default_branch}");
+    let (merge_code, _, merge_stderr) =
+        capture_status("git", &["merge", &default_ref], Some(worktree))?;
+    if merge_code != 0 {
+        let conflicts = capture(
+            "git",
+            &["diff", "--name-only", "--diff-filter=U"],
+            Some(worktree),
+        )?;
+        if conflicts.trim().is_empty() {
+            let _ = capture_status("git", &["merge", "--abort"], Some(worktree));
+            return Err(format!(
+                "composition merge failed without conflicts: {}",
+                merge_stderr.trim()
+            ));
+        }
+        capture("git", &["merge", "--abort"], Some(worktree))?;
+        return Ok(Admission {
+            composition: CompositionResult::Conflict,
+            local_leg: LocalLeg::NotRun,
+            admitted_head_sha: admitted_head_sha.into(),
+        });
+    }
+
+    let validations: [(&str, &[&str]); 3] = [
+        ("cargo test", &["test"]),
+        (
+            "cargo clippy",
+            &[
+                "clippy",
+                "--all-targets",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        ),
+        ("cargo fmt", &["fmt", "--check"]),
+    ];
+    for (tool, args) in validations {
+        let (code, _, stderr) = capture_status("cargo", args, Some(worktree))?;
+        if code != 0 {
+            return Ok(Admission {
+                composition: CompositionResult::Clean,
+                local_leg: LocalLeg::Fail(ValidationFailure {
+                    tool: tool.into(),
+                    stderr,
+                }),
+                admitted_head_sha: admitted_head_sha.into(),
+            });
+        }
+    }
+
+    Ok(Admission {
+        composition: CompositionResult::Clean,
+        local_leg: LocalLeg::Pass,
+        admitted_head_sha: admitted_head_sha.into(),
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -408,8 +943,6 @@ fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, S
 
 /// Run a command and capture its exit code, stdout, and stderr without
 /// treating a non-zero exit as an error.
-// The dependent `land` bead adds the first production caller.
-#[allow(dead_code)]
 fn capture_status(
     program: &str,
     args: &[&str],
@@ -459,6 +992,50 @@ mod tests {
         assert!(usage().contains("abacus run"));
         assert!(usage().contains("abacus land"));
         assert!(usage().contains("abacus drain"));
+    }
+
+    #[test]
+    fn land_arguments_accept_once_on_either_side_of_the_optional_repo() {
+        for args in [
+            vec!["--once".to_owned(), "/tmp/repo".to_owned()],
+            vec!["/tmp/repo".to_owned(), "--once".to_owned()],
+        ] {
+            assert_eq!(
+                parse_land_args(&args).unwrap(),
+                (PathBuf::from("/tmp/repo"), true)
+            );
+        }
+        assert_eq!(parse_land_args(&[]).unwrap(), (PathBuf::from("."), false));
+        assert!(parse_land_args(&["--unknown".into()]).is_err());
+        assert!(parse_land_args(&["one".into(), "two".into()]).is_err());
+    }
+
+    #[test]
+    fn resolution_prompt_carries_identity_attempt_provider_and_lane_owned_push_contract() {
+        let candidate = Candidate {
+            bead_id: "ab-resolution".into(),
+            branch: "lane/ab-resolution".into(),
+        };
+
+        let prompt = resolution_prompt(&candidate, "trunk", "required check failed");
+
+        for required in [
+            "merge-queue resolution",
+            "bead ab-resolution",
+            "attempt 1 of 1",
+            "existing PR branch lane/ab-resolution",
+            "default branch trunk",
+            "required check failed",
+            "provider identity at every execution",
+            "do not run any br write command",
+            "push it from this lane",
+            "abacus itself never pushes",
+        ] {
+            assert!(
+                prompt.contains(required),
+                "prompt lacked {required:?}: {prompt}"
+            );
+        }
     }
 
     #[test]
