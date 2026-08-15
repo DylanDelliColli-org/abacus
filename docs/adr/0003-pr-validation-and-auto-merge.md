@@ -5,7 +5,7 @@ lifecycle: active
 
 # ADR 0003: PR validation and auto-merge via the GitHub merge queue
 
-- **Status:** **draft** 2026-08-15, pending operator acceptance at the
+- **Status:** **accepted** 2026-08-15, operator approval at the
   `ab-automerge-2b2` RECORD gate. Trail: bloat review run 1 (fresh
   Codex context, pre-amendment) superseded by run 2 (fresh Codex pane,
   post-amendment); run 2's findings — cut 1 withdrawn by the reviewer

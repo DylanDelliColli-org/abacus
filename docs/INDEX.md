@@ -16,5 +16,5 @@ Every managed document appears here exactly once.
 | docs/INDEX.md | authoritative map of the managed documentation corpus |
 | docs/adr/0001-planning-flow.md | accepted architecture decision for the ABACUS planning flow |
 | docs/adr/0002-shared-work-state-store.md | accepted architecture decision: all lanes use one shared br store |
-| docs/adr/0003-pr-validation-and-auto-merge.md | draft architecture decision: engine-owned PR validation and auto-merge (land/drain) |
+| docs/adr/0003-pr-validation-and-auto-merge.md | accepted architecture decision: PR validation and auto-merge via the GitHub merge queue |
 | docs/history/INDEX.md | archive pointer index for retired planning records |

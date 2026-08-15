@@ -896,3 +896,31 @@ trigger, check naming, and enqueue verb agree.
 - **Resolution commits are pushed by the agent lane**, like every
   worker lane; abacus's own git argv never contains `push` and the
   forbidden-flags invariant stays absolute.
+
+---
+
+## RECORD
+
+Artifact produced: **ADR 0003, `docs/adr/0003-pr-validation-and-auto-merge.md`,
+accepted 2026-08-15** at the operator gate. The design-document review
+gate fired on creation and both role cards ran in fresh Codex panes of
+a different lineage: bloat review twice (run 1 pre-amendment,
+superseded; run 2 post-amendment — cut 1 withdrawn by the reviewer and
+escalated into the merge-queue pivot the operator adopted; cuts 3 and
+6 accepted and absorbed; cuts 2, 4, 5 reaffirmed), then spec
+validation on the pivoted text (seven findings, all faithfulness
+restorations of decided items, all applied). The full trail lives in
+the ADR's status block.
+
+The substage's second deliverable, the **north-star amendment**,
+landed earlier in the substage at explicit operator direction and
+wording (prior blob `3109a8e`, commit `da14970`): overnight merging of
+pending PRs enters the success condition for opted-in repositories;
+"Autonomy ends at the PR" gains the opt-in exception; non-goal 3 is
+qualified. The operator held the amendment to the minimum that
+licenses the decided work; a process rule was set and recorded during
+this substage: NORTH-STAR.md is never edited without operator consent
+on the concrete text.
+
+Operator approval of this section: given with the ADR acceptance,
+2026-08-15.
