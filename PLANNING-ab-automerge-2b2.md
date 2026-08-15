@@ -762,3 +762,127 @@ in CI (RESEARCH option 2) if that parity is ever declared load-bearing.
 The exact gh enqueue verb and its behavior on a queue-required repo;
 how dequeue events are observed (poll surface); the `merge_group`
 trigger's interaction with required-check naming.
+
+---
+
+## TEST-STRATEGY — delta (merge-queue pivot, D1′–D9′)
+
+Produced by a columbo-type subagent, 2026-08-15, against the approved
+matrix and the ARCHITECTURE addendum. Every ID T1–T44 accounted for
+exactly once: **14 removed, 14 surviving unchanged, 16 reshaped, 8
+added (T45–T52). Net matrix: 38 rows.**
+
+**Probe that changed a conclusion:** `gh pr merge --help` (gh 2.87.3) —
+on a queue-required branch, bare `gh pr merge <selector>` with no
+strategy flag IS the enqueue verb; auto-merge is enabled implicitly
+when checks are pending; and `--admin` is the documented queue bypass.
+Consequences: the enqueue-result parser needs BOTH success stdout
+shapes (added-to-queue, auto-merge-enabled) or pending-CI admissions
+park erroneously (T48); `--admin` is promoted to the most load-bearing
+forbidden flag; the enqueue argv is pinned positively (T47).
+
+### Removed (14)
+
+T1, T8, T19, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34 —
+all planned-but-unwritten rows whose subjects (rollup classification,
+pre-merge polling, BEHIND recheck, CAS-merge race, resolution ladder
+ordering, rerere replay) die with the superseded machinery. T32's
+routing intent is absorbed by T46/T23 (conflicts now discovered by a
+real `git merge` exiting non-zero at admission, not gh JSON). Two live
+requirements riding on T33 are re-attached, not lost: the
+injected-poll-delay seam moves to T50/T51; poll termination moves to
+T44's exit assertion.
+
+### Surviving unchanged (14)
+
+T6, T9, T10, T11, T13, T14, T17, T18, T20, T35, T36, T40, T42, T43.
+Non-obvious survivals: T6 (the composition step runs the identical
+`git merge origin/<default>` argv — only the destination changed);
+T20 (the one-attempt bound is now the only resolution policy — red
+branch); T35/T36 (`capture_status` is still built; T36 remains the
+only guard on `capture()`'s existing contract). **T42/T43 lose their
+GATED marker** — D14/D15 supply the decision they were waiting on.
+
+### Reshaped (16)
+
+T2 (eligibility reads ruleset/required-checks configuration, not
+rollups), T3 (refusal on ruleset `[]`, still before any side effect),
+T4 (admission-composition happy path: throwaway worktree, local leg on
+the composition, exactly one enqueue, PR head SHA unchanged at exit),
+T5 (admission red → park, no enqueue), T7 (composition freshness:
+admission refetches origin/main between cycles — serial revalidation
+itself is GitHub's merge-limit-1 property, not locally assertable),
+T12 (enqueue as terminal verb), T15 (exception path: failed resolution
+→ evidence comment, no enqueue, no tracker write verbs), T16 (two park
+body shapes: admission-red and attempt-exhausted), T21 (Park never
+Enqueue), T22 (admission worktree inherits `merge.beads-jsonl.driver`
+— now the proof the highest-probability conflict class resolves
+without burning an agent lane), T23 (composition conflict → exactly
+one agent attempt → park, no enqueue), T37 (sole enqueue-producing
+path carries admitted head SHA), T38 (four locally-decidable rows;
+Wait/Update rows deleted), T39 (adds `merge_group:` trigger presence —
+without it every enqueued PR times out), T41 (re-parented to T4), T44
+(idempotency against already-queued/already-merged + clean watch
+termination).
+
+### Added (8)
+
+| ID | Story / decision | Layer | New in | Assertion (concrete) | Est. |
+|---|---|---|---|---|---|
+| T45 | S1, S8, D1′, D5′, D10 | unit | `src/land.rs` | Ruleset `[]` → `Ineligible` naming the queue; queue without required checks → `Ineligible` naming checks; both present → `Eligible`. Positive fixture captured from the org repo after the operator's D1′ act — not authorable before it | 0.00s |
+| T46 | S6, D2′, D8′ | unit | `src/land.rs` | Composition `Conflict` → `Resolve`, never `Enqueue`, for every local-leg value including not-run | 0.00s |
+| T47 | D2′, D9′ | integration | `tests/land.rs` | Happy admission logs exactly one `gh pr merge`, bare form: branch selector, no strategy flag, no `--admin`, no `--match-head-commit`, no `-d` | 0.30s |
+| T48 | D2′, D5′ | unit | `src/land.rs` | Enqueue-result parser: added-to-queue stdout AND auto-merge-enabled stdout both → `Admitted`; non-zero ineligibility → distinct error via `capture_status`. Treating the auto-merge shape as failure would park every pending-CI admission — the common case | 0.00s |
+| T49 | D2′, D5′, D12 | unit | `src/land.rs` | Queue-state parser: `Queued`/`Merged`/`Dequeued(reason)`/`Absent` classify distinctly; `Dequeued` carries a non-empty reason for the park body | 0.00s |
+| T50 | S6, D2′, D8′ | integration | `tests/land.rs` | Queued→Dequeued across two watch reads → exactly one `worktree open` + `agent prompt`; no second enqueue before the attempt terminates; poll delay injected | 0.45s |
+| T51 | S6, D2′, D8′ | integration | `tests/land.rs` | One-attempt bound, green branch: agent resolves, re-admission green → exactly one further enqueue, total agent dispatches across the cycle = 1 | 0.50s |
+| T52 | D6′, D12 | integration | `tests/land.rs` | Across a full land cycle, abacus's own git argv contains no `push`, and no admission worktree survives at exit | 0.25s |
+
+### Revised forbidden-flags invariant (D9′)
+
+Stays: **`--admin`** (now the one-flag bypass of the entire epic —
+gh's documented queue bypass), `update-branch`, git `--force`/
+`--force-with-lease`/`-f`, git `-X ours`/`-X theirs`/
+`--strategy-option` (still double-guarded by T6). Newly forbidden:
+**`--match-head-commit`** (inverted — its presence means abacus is
+landing directly instead of enqueueing), **`-d`/`--delete-branch`**,
+**`git push` in abacus's own argv** (resolution commits are pushed by
+the agent lane, not abacus — lock at DECOMPOSITION), **mutating
+`gh api` calls to rulesets/branch protection** (repo configuration is
+the operator's prerequisite act, never the engine's). Retired:
+`--auto` (ordering delegation is now the mechanism; T47's positive
+argv pin is the better guard) and the blanket `gh pr merge` ban
+(replaced by the shape rule: bare enqueue form only).
+
+### Revised budget arithmetic
+
+6.77s approved − 1.70s removals − 0.30s reshape savings + 1.50s
+additions = **6.25s estimated** across 38 rows. Measured 5.36s + 6.25s
+= **11.61s against the 30s budget; headroom 18.39s.** Nothing dropped;
+T40 is the only remaining low-value candidate; T13 remains the success
+metric's only proof — last to cut. Serial-upper-bound and link-time
+qualifications carry over.
+
+### Tripwire check on the delta
+
+Zero on-disk deletions (all removed rows were unwritten); T17 and T36
+— the two guards on existing code — survive unchanged; the
+`dispatch_prompt` `push < pr < close` preservation constraint stands
+verbatim. The T25–T32 fold removes tests only for behavior that is
+itself removed (eligibility reads configuration, the watch reads queue
+state; neither reads check results). Thinning risks re-flagged: T15's
+negative half, T22's empty-herdr-log half, T7's freshness assertion,
+and the skip-guard acceptance (operator host still reports 45+ passed,
+0 ignored).
+
+**Gap surfaced, not invented over:** T26's evidence half — the park
+comment naming which check failed — has no successor, because no
+surface for reading a `merge_group` run's failing job is locked.
+DECOMPOSITION options: accept the coarser park body (dequeue reason
+only, non-empty per T49), or lock a read surface and add a row.
+
+**Verify-by-first-run additions (S8 bead):** required-check names in
+the workflow must match the operator's ruleset (nothing local can
+assert the ruleset half), and **the first enqueued PR leaving the
+queue merged** is the single observation proving the `merge_group`
+trigger, check naming, and enqueue verb agree.
