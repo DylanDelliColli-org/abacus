@@ -361,3 +361,176 @@ All PROVISIONAL — DECOMPOSITION re-derives footprints from the locked architec
 **Group F — repo-agnostic cleanup (S9).** `bin/br-shim`'s path (shared with D), `lib.rs` fixture paths, and the agent-kind flag (shared with B). Genuinely scattered; a candidate for one "generalization sweep" lane, but only **after** A/B/C, since it edits the same files. Confidence medium.
 
 Cross-cutting: **Groups A, B, C, and F all touch `src/main.rs` or `src/lib.rs`.** Sequencing matters more than bundling — dispatching any two as concurrent lanes is the scenario that would finally produce the cross-lane source conflict this repo has not yet measured. This epic's own decomposition is the most likely first real test of the moving-base hazard it exists to solve.
+
+---
+
+## ARCHITECTURE
+
+Produced 2026-08-15 by the orchestrator inline. **Material producer
+substitution:** the default producer (gaudi skill) presumes an existing
+module to audit or an existing bead tree to gate; this substage locks
+greenfield contracts from the RESEARCH base, so the orchestrator
+produced it directly, applying gaudi's interface-coherence lens — every
+decision below names its seam and its smell risk where one exists.
+
+### Decisions taken at the RESEARCH gate (operator, 2026-08-15)
+
+- **The multi-bead loop is in this epic.** The success metric stands as
+  framed. Affects bundle group A.
+- **CI validates the portable subset** (28 tests + clippy + fmt), not
+  the full suite. The `br`-requiring 17 integration tests stay
+  local-only. **S7 is reworded accordingly:** the local leg is the
+  full-parity gate; the remote leg is the crash-surviving, GitHub-
+  visible gate over the portable subset. S8's "eligibility requires CI
+  present" stands — RESEARCH showed it is a mechanical necessity, not
+  just policy.
+
+### Changed research assumptions
+
+RESEARCH's provisional lean toward recording nothing and its subcommand
+lean are confirmed below (D2, D4); its assumption that the loop might be
+out of scope is resolved (in scope); its S7-parity concern is resolved
+by the operator's subset decision rather than by installing `br` in CI.
+
+### Locked decisions
+
+**D1 — Engine-owned serialized queue; GitHub's native merge queue is
+rejected.** Three disqualifiers from RESEARCH stand: it validates a
+speculative merge commit the local leg cannot run against (breaks S2);
+it owns ordering (displaces S3); it dequeues conflicts instead of
+resolving them (no S6 hook). It also requires branch-protection
+machinery this repo does not have.
+
+**D2 — The merge queue is a separate subcommand: `abacus land`.**
+Decoupled from dispatch so merges serialize while lanes keep finishing
+(S3, S4). `abacus land [repo]` loops: enumerate candidates (open PRs on
+`lane/*` branches whose bead is closed — `gh pr list --state open
+--json headRefName` intersected with `br` status), process one at a
+time, poll between rounds. `--once` processes the current candidate set
+and exits (the integration-test entry point). Termination: continuous
+until interrupted — the overnight pattern is drain processes plus one
+land process per repo. **Sole-merger assumption, stated:** during a
+run, `abacus land` is the only writer to the repo's main. Before each
+merge it re-reads `mergeStateStatus`; a `BEHIND` result (external push
+to main) loops back to update-and-revalidate rather than merging.
+
+**D3 — The multi-bead dispatch loop is `abacus drain`:** a thin loop
+over the existing single-bead cycle — while label-eligible ready beads
+exist, run one dispatch cycle to settle and reap, then select again.
+Lane concurrency comes from running multiple drain processes (the
+pattern the ten-worker pilot validated), not from in-process lane
+management. **Claim-race defense:** a failed or already-taken claim is
+a normal event — reselect the next ready bead, never abort. This makes
+claim atomicity a non-blocking property: either `br`'s claim is guarded
+(race resolves cleanly) or the reselect absorbs it.
+
+**D4 — PR discovery is by branch name.** The engine already knows
+`lane/<bead-id>`; both `gh pr merge` and `gh pr view` accept a branch
+selector. No PR numbers are persisted on beads; no new state.
+
+**D5 — The gate primitive is `gh pr view --json
+statusCheckRollup,mergeable,mergeStateStatus`,** polled until known,
+never `gh pr checks` exit codes (which conflate failed with absent). An
+empty `statusCheckRollup` on an eligibility check means "no CI" and the
+repo is refused (S8). Engine change: a new exit-code-aware sibling of
+`capture()` (`capture_status`, returning code + stdout + stderr);
+`capture()` itself is untouched, so its eight call sites do not churn.
+
+**D6 — Branch update is a local merge of origin/main into the PR
+branch,** performed in a land-owned plain `git worktree` (the lane
+worktree is already reaped; no agent is needed for the mechanical
+path, so herdr is not involved here). No force-push ever: rebase and
+`gh pr update-branch` are rejected (the former orphans CI and rewrites
+history, the latter has no conflict hook — which also moots RESEARCH
+open unknown 3). Merge-commit history matches all 17 merged PRs.
+
+**D7 — Validation legs.** Local leg: full suite + clippy + fmt run in
+the landing worktree on the updated branch — full parity including the
+`br`-requiring integration tests, because it runs on the operator host.
+Remote leg: CI green on the exact validated head SHA — the portable
+subset. Order: update → local leg (fails in seconds) → push → CI wait →
+merge. Priced against the 30s suite budget: the local leg is one full
+suite run per landing, ~5.1s at current measure.
+
+**D8 — S6 conflict resolution is layered, cheapest first:**
+1. Domain drivers (the `merge-jsonl` precedent) resolve file classes
+   with mechanical semantics; they already fail loudly into a normal
+   conflict otherwise.
+2. `git rerere` is enabled in the landing worktree as an accelerator —
+   replaying resolutions the layers below produced earlier in the same
+   queue drain.
+3. One bounded agent-resolution attempt: a herdr lane opened on the
+   conflicted branch (`herdr worktree open --branch`), prompt carrying
+   the bead id, the attempt marker, and explicit
+   this-is-a-resolution-not-implementation framing (CONSTRAINTS
+   findings 2 and 3 apply — it is a worker launch). Exit condition is
+   the D7 local leg.
+4. Anything still unresolved — or a resolution that fails validation —
+   parks per S4.
+Crash constraint (CONSTRAINTS finding 4): resolution commits are pushed
+to the PR branch as they are made; an uncommitted landing worktree
+never holds the only copy of anything.
+
+**D9 — Merge and park mechanics.** Merge: `gh pr merge --merge
+--match-head-commit <validated SHA>` — the compare-and-swap that makes
+a worker pushing after close a merge *failure* (loop back to update)
+instead of an unvalidated landing. After a successful merge the remote
+branch is deleted (matches the observed hygiene of all 17 merged PRs;
+safe, the SHA is in main; resolves RESEARCH open unknown 4 by making
+deletion an owned act instead of a mystery). Park: a `gh pr comment`
+carrying the failure evidence — off-host durable, read at morning
+review. The bead stays closed; no tracker writes on park.
+
+**D10 — S1 opt-in is the act of running `abacus land` on a repo.**
+Within operator decision 3's "configuration or invocation": invocation.
+No config file until observed need (MVP-first ruling); `abacus land`
+refuses a repo whose eligibility check finds no CI (D5). The morning-
+review default (S5) is therefore literal: not running land changes
+nothing.
+
+**D11 — New module `src/land.rs`:** pure policy — gh JSON parsing, a
+`LandOutcome` type, candidate selection, gate decisions — separate from
+process-spawning, mirroring how `lib.rs` isolates parsing today.
+`BeadOutcome` is untouched: landing states are not bead-outcome states,
+and growing that enum was the named smell risk.
+
+**D12 — Crash recovery is stateless recomputation.** The queue is
+re-derived on every land start from GitHub (open `lane/*` PRs) and the
+`br` store (closed beads); worktrees are disposable and recreated;
+queue position is never persisted. With D8's push-as-you-resolve, the
+only unrecoverable state class RESEARCH identified is closed.
+
+**D13 — AGENTS.md amendment (Group C):** the worker contract is
+unchanged — workers still never merge. The line "Autonomy ends at the
+PR. Never merge to `main`" gains the engine-side exception: in land
+mode the *engine* merges validated PRs. Prompt text does not change,
+so the verbatim-substring test coupling is not disturbed by this
+epic's protocol edit.
+
+### Smell and migration risks
+
+- `capture` signature ripple — avoided by D5's sibling function.
+- `BeadOutcome` enum growth — avoided by D11's separate type.
+- Prompt-assertion coupling (`lib.rs` verbatim substring tests) — Group
+  C stays one lane; D13 avoids prompt edits entirely.
+- Sequencing over bundling: groups A, B, C, F all touch
+  `src/main.rs`/`src/lib.rs`; DECOMPOSITION must express order as
+  dependencies, and this epic's own drain is the first real test of
+  the moving-base regime it builds for (RESEARCH's calibration note:
+  the hazard is anticipated, not yet measured — the operator accepts
+  building ahead of measurement here by design, since S3 changes the
+  regime).
+
+### RESEARCH open unknowns, resolved
+
+1. `br` in CI → operator: portable subset (gate decision above).
+2. Loop scope → operator: in this epic (D3).
+3. `allow_update_branch` API behavior → mooted by D6 (no update-branch API).
+4. Branch deletion cause → superseded by D9 (deletion becomes owned).
+5. Attachment point → D2 (subcommand).
+6. Native merge queue → D1 (rejected).
+
+Remaining verify-at-implementation items (not open questions): live-PR
+`mergeable` poll behavior (first land integration test observes it),
+actual CI durations (first two workflow runs), claim behavior under
+concurrent drains (absorbed by D3's reselect defense either way).
