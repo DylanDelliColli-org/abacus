@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, exit};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use abacus::{
     BeadOutcome, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
@@ -149,6 +149,31 @@ where
     Ok((Some(settled), outcome))
 }
 
+fn retry_probe_once<T, Probe, Delay>(mut probe: Probe, delay: Delay) -> Result<T, String>
+where
+    Probe: FnMut() -> Result<T, String>,
+    Delay: FnOnce(),
+{
+    match probe() {
+        Ok(result) => Ok(result),
+        Err(_) => {
+            delay();
+            probe()
+        }
+    }
+}
+
+fn probe_bead_outcome(repo: &Path, bead_id: &str) -> Result<BeadOutcome, String> {
+    let bead_state = retry_probe_once(
+        || capture("br", &["show", bead_id, "--json"], Some(repo)),
+        || {
+            eprintln!("bead outcome probe failed; retrying once after 2 seconds");
+            std::thread::sleep(Duration::from_secs(2));
+        },
+    )?;
+    parse_bead_outcome(&bead_state)
+}
+
 fn cmd_run(repo: &Path) -> Result<(), String> {
     let repo = repo
         .canonicalize()
@@ -219,18 +244,14 @@ fn cmd_run(repo: &Path) -> Result<(), String> {
         };
         println!("{}", settled.trim_end());
 
-        let bead_state = capture("br", &["show", &bead.id, "--json"], Some(&repo))?;
-        let initial_outcome = parse_bead_outcome(&bead_state)?;
+        let initial_outcome = probe_bead_outcome(&repo, &bead.id)?;
         if initial_outcome == BeadOutcome::NeverEngaged {
             eprintln!("worker never engaged after startup prompt; retrying once");
         }
         let (retry_settled, outcome) = retry_never_engaged_once(
             initial_outcome,
             || capture("herdr", &prompt_args, None),
-            || {
-                let bead_state = capture("br", &["show", &bead.id, "--json"], Some(&repo))?;
-                parse_bead_outcome(&bead_state)
-            },
+            || probe_bead_outcome(&repo, &bead.id),
         )?;
         if let Some(retry_settled) = retry_settled {
             println!("{}", retry_settled.trim_end());
@@ -314,6 +335,52 @@ mod tests {
     #[test]
     fn usage_text_describes_the_run_command() {
         assert!(usage().contains("abacus run"));
+    }
+
+    #[test]
+    fn outcome_probe_retry_waits_once_then_returns_the_second_result() {
+        let mut probe_calls = 0;
+        let mut delay_calls = 0;
+
+        let outcome = retry_probe_once(
+            || {
+                probe_calls += 1;
+                if probe_calls == 1 {
+                    Err("first probe failed".to_owned())
+                } else {
+                    Ok(BeadOutcome::NeverEngaged)
+                }
+            },
+            || delay_calls += 1,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, BeadOutcome::NeverEngaged);
+        assert_eq!(probe_calls, 2, "only one re-probe is allowed");
+        assert_eq!(delay_calls, 1, "the re-probe must be delayed once");
+    }
+
+    #[test]
+    fn outcome_probe_retry_propagates_the_second_failure_unchanged() {
+        let mut probe_calls = 0;
+        let mut delay_calls = 0;
+
+        let error = retry_probe_once::<BeadOutcome, _, _>(
+            || {
+                probe_calls += 1;
+                Err(if probe_calls == 1 {
+                    "first probe failed".to_owned()
+                } else {
+                    "second probe failed".to_owned()
+                })
+            },
+            || delay_calls += 1,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "second probe failed");
+        assert_eq!(probe_calls, 2, "only one re-probe is allowed");
+        assert_eq!(delay_calls, 1, "the re-probe must be delayed once");
     }
 
     #[test]
