@@ -5,11 +5,17 @@ lifecycle: active
 
 # ADR 0004: Foreign-repository onboarding — tracker migration, worker contract, and boundaries (market-brief-package)
 
-- **Status:** **proposed** 2026-08-17 — pending Codex spec review and
-  bloat review (operator direction of this date; both operators froze
-  all codebase actions in both repositories until those reviews and the
-  operator's decision on their findings). One action predates the
-  freeze and is complete: the backup/archive leg (D3), executed and
+- **Status:** **proposed** 2026-08-17 — pending Codex spec validation
+  (operator direction of this date; both operators froze all codebase
+  actions in both repositories until review completes and the operator
+  rules). Trail: bloat review ran the same day (fresh Codex pane, one
+  pass, seven cuts) and the operator **set its output aside wholesale**
+  — the cuts were anchored to this repository's north star, while the
+  document serves the target repository's mission, whose own north star
+  is not yet established (the operator's declared first step after
+  unfreeze). The anchor gap is jotted as methodology evidence. Spec
+  validation proceeds on the unmodified document. One action predates
+  the freeze and is complete: the backup/archive leg (D3), executed and
   verified before the freeze was declared.
 - **Date:** 2026-08-17
 - **Deciders:** operator (all rulings below), orchestrator session
@@ -27,11 +33,15 @@ lifecycle: active
 
 The operator directed onboarding `~/dev-environment/market-brief-package`
 (GitHub `DDC-Heartwood/market-intelligence`, Python/JS monorepo) as the
-second abacus-governed repository. This is the first onboarding of a
-repository abacus did not grow up in, and the operator ruled it proceeds
-manually — it IS the observation run for the per-repo half of the
-`abacus init` epic (`ab-init-plan-5ka`), with every friction point
-captured to the jot queue rather than fixed ad hoc (MVP-first ruling).
+second abacus-governed repository. **The primary mission is production
+use** (operator reframe 2026-08-17): the operator needs this tooling
+working in that repository to get real work done now. It is also the
+first onboarding of a repository abacus did not grow up in, and the
+operator ruled it proceeds manually — so it doubles as the observation
+run for the per-repo half of the `abacus init` epic
+(`ab-init-plan-5ka`), with every friction point captured to the jot
+queue rather than fixed ad hoc (MVP-first ruling); that evidence is a
+byproduct, not the driver.
 
 The target repo differs from abacus in every dimension that matters: a
 bd-era Dolt tracker (1465 issues, 17 `bd remember` memories) instead of
@@ -138,10 +148,13 @@ the manifest exists and doctor runs green.
 drainable as-is: pivot-stale P1s (parked ADR 0008 lineage), agenda and
 meta beads, and 117 SABLE-mentioning beads (33 of 101 active). The
 operator ruled exclusively-SABLE beads are deleted from the live
-backlog — implemented as excluded-from-import, remaining greppable in
-the archive. The exclusive-vs-incidental classification waits on the
-successor ruling (the resident session's dispositions are explicitly
-conditional on it). Three beads (`zh4gt`, `i3xzk`, `9ml7z`) describe
+backlog. **Deletion is decoupled from the import** (operator reframe
+2026-08-17): beads import per the filter, and exclusively-SABLE ones
+are deleted as post-import backlog hygiene once the successor ruling
+lands and the resident session's classification extends — meanwhile
+per-run drain-set selection keeps stale beads out of lanes, so the
+migration does not wait on the ruling. Deleted beads remain greppable
+in the archive. Three beads (`zh4gt`, `i3xzk`, `9ml7z`) describe
 gating failure modes in general and transcribe into any successor
 gate's spec before leaving the live pool, whatever their dispositions.
 
@@ -156,12 +169,20 @@ symlink-equivalence premise on GEMINI.md, an overstated blocker
 (retracted by its own author on re-measurement), and the import-leak
 class itself.
 
-## State at freeze (2026-08-17)
+## State at freeze (2026-08-17, updated same day)
 
 Both trees clean of onboarding changes. market-brief: branch
-`llm-integration`, working tree carrying only its own pre-existing
-in-flight paths (compiler.py + test + untracked 08-13 shift report);
-dolt server cleanly stopped (pid/port absent); nothing applied.
+`llm-integration`; the resident operator granted commit authority and
+the formerly-frozen `xiv8r` diff **landed at `2c32fd2`** (gates green;
+an explicit WIP checkpoint — resolver + seven tests complete,
+`set_relation_span` not yet wired into the paragraph schema or
+renderer, final adversarial pass outstanding), leaving that working
+tree fully clean; dolt server cleanly stopped (pid/port absent);
+nothing else applied. The resident session deliberately did NOT write
+the tracker, so the store still matches the verified backup and export
+exactly — but the exported `xiv8r` bead describes a frozen uncommitted
+diff, stale against git; the migration bead requires appending the
+`2c32fd2` correction to the migrated bead immediately after import.
 abacus: epic + tracker records committed and pushed. Archive intact
 (six entries incl. README). Closed: `ab-mbp-onboard-hb0.1` (backup).
 Global CLAUDE.md bd→br draft exists (session scratchpad), applies at
@@ -169,8 +190,9 @@ migration time, unapplied.
 
 ## Open questions (for review and operator ruling)
 
-1. `sable-merge-gate` successor — owns D6's release and D9's
-   classification gate. Resident-session seat.
+1. `sable-merge-gate` successor — owns D6's release and the timing of
+   D9's post-import hygiene pass (no longer a migration gate).
+   Resident-session seat.
 2. GEMINI.md — deletion premise refuted; keep-and-trim recommended;
    operator re-decision pending.
 3. Standing-directives document — final name, location, survival.
@@ -179,6 +201,14 @@ migration time, unapplied.
    alike; reviewers should say whether it belongs in this ADR's scope
    or the resident backlog. (Posed as a question, not a decision.)
 5. Global CLAUDE.md bd→br edit — drafted; timing pinned to migration.
+6. Target-repo north star — the operator's declared first step after
+   unfreeze (establish mode, resident session). Not required by the
+   execution path (the engine never reads it); required before the
+   first full-tier planning run there and before design-doc reviews in
+   that repository can anchor to anything — this ADR's own bloat pass
+   demonstrated the anchor gap. Mechanical prerequisite: the global
+   `~/.claude/skills/north-star` symlink does not exist yet (one-line
+   `ln -s` to bb-skills).
 
 ## Consequences
 
