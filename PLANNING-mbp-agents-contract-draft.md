@@ -80,6 +80,11 @@ green is about code you didn't touch.
    ```bash
    python -c "import src, pathlib as p; f=p.Path(src.__file__).resolve(); assert str(f).startswith(str(p.Path.cwd().resolve())), f'IMPORT LEAK: {f}'"
    ```
+
+   Because `src` is a generic name, ANY directory containing a `src/`
+   shadows it — so a tripped assertion can mean wrong checkout OR wrong
+   project entirely; read the resolved path in the failure message to
+   tell which before choosing a remedy.
 3. If an assertion trips anyway: prepend the directory that CONTAINS
    the module — for the sibling trees your worktree root, for `src`
    the worktree's `location-briefing/` — e.g. from the worktree root
