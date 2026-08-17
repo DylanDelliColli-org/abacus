@@ -54,25 +54,40 @@ package. The leak: any invocation whose cwd does not contain the package
 resolves to the **main checkout** — your change never executes and the
 green is about code you didn't touch.
 
-1. **Run every gate from your worktree root. Never `cd` into a
+1. **Run every Python gate from your worktree root. Never `cd` into a
    subdirectory first.** In particular, do NOT mirror `test.yml`'s
    `working-directory: location-briefing` + `../headless_*` invocation of
    the sibling gate — CI is a single checkout, so that is safe there and
-   unsafe for you. The one legitimate exception is the backend gate,
-   which must run from `location-briefing/` and is safe there because
-   `location-briefing/src` sits under that cwd.
+   unsafe for you. Two legitimate exceptions: the backend gate runs from
+   `location-briefing/` (safe — `location-briefing/src` sits under that
+   cwd), and the frontend gate runs from `location-briefing/frontend/`
+   (safe — npm executes no Python imports). Return to the worktree root
+   before any other Python gate.
 2. For every top-level package your diff touches, assert it resolves
-   under your own tree (the oracle — run it, don't reason it out):
+   under your own tree (the oracle — run it, don't reason it out).
+   From the worktree root, for the sibling trees:
 
    ```bash
    python -c "import headless_eval, pathlib as p; f=p.Path(headless_eval.__file__).resolve(); assert str(f).startswith(str(p.Path.cwd().resolve())), f'IMPORT LEAK: {f}'"
-   python -c "import location_briefing, pathlib as p; f=p.Path(location_briefing.__file__).resolve(); assert str(f).startswith(str(p.Path.cwd().resolve())), f'IMPORT LEAK: {f}'"
    ```
-3. If an assertion trips anyway: prepend your worktree —
-   `PYTHONPATH="$PWD:$PWD/location-briefing/src"` (add the SDK dir you
-   touched, if any) — and re-run the assertion; `PYTHONPATH` entries
-   deterministically precede the editable mappings. Trust the gate only
-   if the re-run assertion passes under the same environment.
+
+   For `location-briefing` trees, run this from `location-briefing/`
+   (same cwd as the backend gate). The distribution's importable module
+   is literally named `src` — the editable finder maps only that name;
+   `import location_briefing` does not exist and will always
+   ModuleNotFoundError:
+
+   ```bash
+   python -c "import src, pathlib as p; f=p.Path(src.__file__).resolve(); assert str(f).startswith(str(p.Path.cwd().resolve())), f'IMPORT LEAK: {f}'"
+   ```
+3. If an assertion trips anyway: prepend the directory that CONTAINS
+   the module — for the sibling trees your worktree root, for `src`
+   the worktree's `location-briefing/` — e.g. from the worktree root
+   `PYTHONPATH="$PWD:$PWD/location-briefing"` (add the parent of the
+   SDK module you touched, if any) — and re-run the assertion;
+   `PYTHONPATH` entries deterministically precede the editable
+   mappings. Trust the gate only if the re-run assertion passes under
+   the same environment.
 4. Still leaking: **BLOCKED** per protocol step 7. Do NOT
    `pip install -e` from a lane worktree — that repoints the shared
    environment at a worktree that will be reaped, breaking the main

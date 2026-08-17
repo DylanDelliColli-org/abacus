@@ -67,7 +67,8 @@ archives, and the import-resolution check any Python target needs).
 to br with prefix `mb-` for new mints; imported beads keep their
 original ids verbatim (mixed-prefix precedent: this repo's own store).
 Import filter: status in {open, in_progress, deferred} ∪ (closed since
-2026-07-17), measured at 351 beads — minus triage deletions (below).
+2026-07-17), measured at 351 beads — imported in full; deletions are
+post-import hygiene per D9, never an import-time subtraction.
 Grounds for the filter's shape: there is NO stored `blocked` status
 (bd derives it over open; a `status=="blocked"` clause matches zero
 rows while reading as coverage), and the 39 `deferred` beads are a
@@ -130,8 +131,11 @@ on llm-integration.
 repository (cargo-hardcoded admission; operator does not intend
 autonomous merging there). Lanes end at PRs. The repo's sole
 sanctioned merge path (`sable-merge-gate`) is SABLE-era; its successor
-ruling is open in the resident session. Successor-before-first-drain:
-a drain whose PRs nobody may land is pointless.
+ruling is open in the resident session. PRs waiting at the human merge
+boundary is the permitted MVP shape, so drains (including the smoke
+lane, whose PR deliberately stays unmerged) do NOT wait on the
+successor ruling — that ruling owns only eventual landing and the
+timing of D9's hygiene pass.
 
 **D7 — Skill distribution by symlink.** `abacus-plan` reaches all
 repos on this machine via a global skills symlink; `abacus init`'s
