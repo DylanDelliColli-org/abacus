@@ -218,7 +218,14 @@ migration time, unapplied.
 
 Accepted: onboarding cost is paid manually once, as evidence. The
 import excludes ~76% of historical beads from the live pool — the
-archive's greppable layer is the compensating control. The worker
+archive's greppable layer is the compensating control. Structural,
+discovered by the first lane: bd's store was gitignored while br's is
+committed by design, so migration converts the entire bead corpus into
+scanned repository content — any onboarded repo with a repo-wide
+content guard hits this on day one (market-brief: 67 violations,
+every markdown lane blocked). Onboarding a guarded repo must update
+the guard's exclusions as part of the migration, not leave it to be
+discovered by the first lane; recorded as init-epic evidence. The worker
 contract grows repo-specific length (gate table, step-zero) — accepted
 because every line traces to a measured failure mode. Multi-repo
 operation becomes real: one machine, one herdr server, two governed
