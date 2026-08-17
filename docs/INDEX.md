@@ -17,4 +17,5 @@ Every managed document appears here exactly once.
 | docs/adr/0001-planning-flow.md | accepted architecture decision for the ABACUS planning flow |
 | docs/adr/0002-shared-work-state-store.md | accepted architecture decision: all lanes use one shared br store |
 | docs/adr/0003-pr-validation-and-auto-merge.md | accepted architecture decision: PR validation and auto-merge via the GitHub merge queue |
+| docs/adr/0004-foreign-repo-onboarding.md | proposed architecture decision: foreign-repository onboarding, first instance market-brief-package |
 | docs/history/INDEX.md | archive pointer index for retired planning records |
