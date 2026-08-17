@@ -69,7 +69,10 @@ For every Full substage:
 1. Read the approved upstream sections of the in-flight record.
 2. Have the default producer create the required deliverable, or substitute any
    capable producer when that is more effective. Record a material substitution
-   in the deliverable.
+   in the deliverable. End every subagent dispatch prompt with an explicit
+   instruction to send the finished deliverable back as a message before going
+   idle — spawned producers otherwise idle silently and each one costs a nudge
+   round-trip (observed 3/3 on 2026-08-17).
 3. Check the file for unresolved assumptions, operator-addressed questions, and
    the required traceability to upstream decisions.
 4. Commit the reviewable deliverable. If the operator requests changes, revise
