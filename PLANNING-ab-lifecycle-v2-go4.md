@@ -537,3 +537,140 @@ Assumptions 1–2 (codex-only monitoring evidence) are carried as contract
 Assumptions 4, 5, 7 carried into DECOMPOSITION/TEST-STRATEGY as noted. No
 research finding was silently promoted; no assumption invalidates the
 frame.
+
+---
+
+*ARCHITECTURE approved by operator 2026-08-18.*
+
+## TEST-STRATEGY
+
+Produced by a columbo-type subagent (lifecycle-tests) 2026-08-18 at HEAD
+`863a8a4`; integrated verbatim by the orchestrator. Grounding: the three
+established harness patterns (lib.rs unit fixtures; tests/drain.rs
+fake-shim; tests/br_roundtrip.rs real-workspace) plus the tests/land.rs
+forbidden-call assertion style for gh coverage. New evidence gathered this
+substage: live `br show --json` comment shape (integer ids,
+second-granularity `created_at` — timestamp ties independently validate
+contract 1's highest-comment-id rule) and the serde trap that a
+commentless bead OMITS the `comments` field rather than emitting `[]`.
+
+### 1. Story-by-test matrix (summary; full matrix as delivered)
+
+**S5 (wedge):** 6 new unit classification tests in src/lib.rs's existing
+test module — Blocked from highest-id BLOCKED comment (fixture shapes
+matching today's live capture); supersede case including REVERSED array
+order (max-id, never array position); absent-vs-empty comments field;
+case-sensitive boundary-checked BLOCKED token from the shared grammar
+constants; status-wins (closed + BLOCKED comment → Completed); plus two
+existing tests widened in place without thinning
+(`bead_status_classifies_the_three_worker_outcomes`,
+`only_a_completed_outcome_reaps_the_lane`). LaneState derivation truth
+table (~2 fns) in the new lane module. Integration: 2 fake-shim drain
+tests (blocked-settle-continues with **exit 0 red against current HEAD —
+the wedge's red-first proof**; awaiting-review-exits-cleanly) and 2
+real-br tests (real `br comments add` blocked classification through the
+real engine parse; superseded-BLOCKED → stalled — real because comment-id
+assignment is precisely what is under test).
+
+**S6:** 1 unit report-renderer test (per-class lines, bead ids, empty
+classes omitted); in-context stdout assertions ride the S5 shim tests.
+
+**S1:** 2 unit brief-contract tests in src/review.rs (modeled on the
+house `dispatch_prompt_carries_bead_identity_and_protocol` style):
+authority map, one-write ground rule with negative space (no git push /
+br close / br update in the brief), verdict-line + Probes grammar;
+deterministic gitignored tmp path. 1 fake-shim sweep test: exactly one
+dedicated-workspace reviewer launch across two sweep iterations,
+prompt-by-file-path, and a grep-negative that **`agent wait --until
+idle` never appears** (Unknown A pinned as a regression tripwire).
+Stated exclusion: the reviewer's own conduct is not suite-testable; the
+enforcement surface is the brief text + the two-comment convention +
+operator adjudication.
+
+**S2:** 5 unit grammar tests in src/review.rs against fixtures captured
+verbatim from the PR 25/26 production records: accepted adjudication;
+rework-requesting adjudication; **reviewer verdict bodies are never
+parsed as adjudications** (contract 5 negative space); latest
+adjudication cycle wins; and the highest-leverage single test in the
+cluster — the adjudication body builder round-trips through the parser,
+making the grammar-coupling mitigation mechanical.
+
+**S3:** 2 unit tests — status POST builder (context exactly
+`adversarial-review`; a two-variant Pending/Success state enum makes
+`failure` unrepresentable) and the combined-status reader distinguishing
+absent from posted-pending (fixtures from live gh output; RESEARCH §3
+quirk). 1–2 fake-shim tests: pending posted exactly once → no new POST on
+rework adjudication → success only after acceptance; grep-negatives: no
+`failure` state ever, no ruleset/branch-protection mutations (land.rs
+forbidden-call style — contract 6).
+
+**S4:** 1 unit reap-policy-by-state test (Merged always; Blocked only
+clean; AwaitingReview/ReworkRequested/Stalled never). 4 fake-shim tests:
+rework redispatches into the existing warm agent on the same branch with
+ZERO worktree-create (the orientation tax S4 kills, as negative space);
+rework outranks fresh dispatch within one iteration; vanished-agent
+recovery recreates on the SAME `lane/<id>` branch; dirty Blocked lane
+left standing with **no `--force`** — the deliberate inversion of
+`abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty`,
+which stays verbatim for completed lanes (tripwire: two distinct
+behaviors, never folded into one parameterized test).
+
+**Cross-cutting regression net:** the extraction is gated by the existing
+~89 tests surviving by name AND assertion body; five named settle-path
+survivors are listed as must-preserve.
+
+### 2. Seam placement
+
+Real-br integration capped at exactly 2 tests (comment-id assignment and
+JSON shape are the seam); all nine sweep/dispatch/rework/status flows on
+fake shims with call-log and forbidden-call assertions; **gh interactions
+explicitly NOT integration-tested against real GitHub** — network, auth
+identity split, and the plan-gated 403 make it unrepeatable; the boundary
+is fixture-tested parsers/builders plus fake-gh shims, with residual
+gh-CLI-drift risk accepted on the same terms the land suite already
+accepts (every gh call propagates error text through `capture`).
+
+### 3. Budget
+
+Measured baseline at `863a8a4`: 9.48–12.88s over 8 warm runs (RESEARCH's
+7.86s did not reproduce under today's concurrent-agent load; budgeting
+uses the worst observed number). Remaining: 30 − 12.9 ≈ 17.1s. Additions:
+17 unit ≈ <0.05s; 9 fake-shim ≈ 1.2s; 2 real-br ≈ 0.9s — ≤2.2s
+pessimistic serial, ~1s effective (thread-pool width-domination).
+Projected post-cluster suite **~13–15s worst case; the budget holds with
+≥15s headroom; no cuts required.**
+
+### 4. Flake hunt — identified
+
+Reproduced 1/18 executions:
+`dispatch_protocol_pushes_opens_pr_then_closes_without_lane_tracker_changes`
+(tests/br_roundtrip.rs:1511), panicking in the `br()` helper on br's own
+validation: `updated_at: cannot be before created_at`. Mechanism: a
+br-side wall-clock race on quick create-then-write sequences
+(non-monotonic clock reads on this WSL2 host or dual clock sources in
+br) — a CLASS, not a single test; it fired in isolation, refining
+RESEARCH's ordering hypothesis away. Benign to correctness (loud,
+attributed, workspace-isolated) but each new real-br create-then-write
+adds an exposure window — a deliberate reason real-br additions are
+capped at 2. Recommended hardening (small DECOMPOSITION bead): one
+~100ms retry in the test `br()` helper matched to this exact validation
+message; quenches the existing 23 tests' exposure and cannot mask real
+failures. RESEARCH assumption 7 disposed: real, pre-existing, benign,
+not ordering-dependent. (Jot filed with full repro.)
+
+### 5. Close
+
+**28 new tests — 17 unit, 11 integration; zero new files under tests/;
+~1–2.2s added wall.** Two items exit the substage: (1) OPERATOR QUESTION
+— the exit-code contract per settle class: proposal is `abacus drain`
+exits 0 whenever the loop drains without infrastructure error regardless
+of class mix (the morning report is the signal), and `abacus run` keeps
+0 = Completed, gains one distinct nonzero (3) for classified
+non-completed settles so wrappers distinguish parked-by-design from
+engine failure (1). The two drain SHIM tests assume drain-exit-0 and
+flip if ruled otherwise. (2) DECOMPOSITION note — the post-adjudication
+pre-merge state has no LaneState name; simplest is
+AwaitingReview-with-flipped-status until Merged, alternative is a
+distinct `Landing` state; plus the `sanitize_agent_name` 32-char
+collision note rides the warm-rework bead ([no-test], not constructible
+with realistic ids).
