@@ -714,3 +714,62 @@ fresh Codex contexts in dedicated panes of workspace adr5-review:
 
 Both reviews' findings are resolved in the committed ADR; the operator's
 RECORD-gate approval covers the ADR as amended plus the D6 ratification.
+
+---
+
+*RECORD approved by operator 2026-08-18 (ADR 0005 accepted; D6 amendment
+ratified).*
+
+## DECOMPOSITION
+
+Children re-derived from ADR 0005 (never from RESEARCH fingerprints
+mechanically; footprints below are final planner-declared write paths).
+
+| Child | Title | Stories | Final footprint | Group |
+|---|---|---|---|---|
+| .1 | extraction of dispatch_cycle into a lane module | prereq for S5/S6 (D7) | src/main.rs, src/lib.rs, src/lane.rs | bundle-wedge |
+| .2 | BeadOutcome::Blocked from highest-id BLOCKED comment | S5 (D1) | src/lib.rs, src/lane.rs | bundle-wedge |
+| .3 | LaneState, sweep-then-dispatch drain, morning report, exit codes | S5+S6 (D1/D2/D6) | src/lane.rs, src/main.rs, src/lib.rs, tests/drain.rs, tests/br_roundtrip.rs | bundle-wedge |
+| .4 | review module: grammars, brief, reviewer launch | S1 (D3/D8) | src/review.rs, src/lane.rs, src/main.rs, src/lib.rs, tests/drain.rs | bundle-review |
+| .5 | adjudication parsing + commit-status lifecycle | S2+S3 (D4) | src/review.rs, src/lane.rs, src/main.rs, tests/drain.rs | bundle-review |
+| .6 | warm lanes: reap on merge, warm rework, same-branch recovery | S4 (D5) | src/lane.rs, src/main.rs, tests/drain.rs | — |
+| .7 | br_roundtrip flake retry (message-matched, helper-level) | test infra (ADR test contract) | tests/br_roundtrip.rs | — |
+
+Bundle disposition vs RESEARCH candidates: Bundle 1 retained as
+bundle-wedge (.1/.2/.3 — near-total overlap confirmed at final footprints;
+one worker or strict sequence). Bundle 3+4 merged into bundle-review
+(.4/.5 — the shared grammar seam in src/review.rs makes them one worker's
+bundle). RESEARCH Bundle 2 (warm lanes) kept UNGROUPED as .6: its heavy
+predicted overlap with the wedge is resolved by strict sequencing (needs
+.5 → .4 → .3), so no tag. Dropped candidates: none stale; the merge of
+3+4 is the only reshaping.
+
+Dependencies (requirement language): .2 needs .1; .3 needs .2 AND .7 (the
+flake retry must land before the cluster's real-br additions — edge added
+at freshness review); .4 needs .3; .5 needs .4; .6 needs .5. Ready front
+inside the epic: exactly .1 and .7. `br lint`: all seven children clean
+(acceptance criteria present; epic carries Success Criteria).
+
+Tripwire verdict: no folded cases (the dirty-reap pair is explicitly
+two tests); no deletions of live-code tests (all 89 existing tests
+must-survive by name and assertion, six named); no thinned assertions
+(widen-in-place instructions carry the no-thinning clause); no
+self-negating sweep clauses in any acceptance criteria.
+
+Freshness verdict (victor-type producer, judged from beads + HEAD only,
+planning file unread): **PASS with three flagged fixes, all applied** —
+.1's module-declaration direction corrected (land.rs is `pub mod land;`
+in src/lib.rs:5, not a main.rs module); .6's sanitize_agent_name
+mechanism corrected (maps non-[a-z0-9-_] to '-', does not case-fold;
+collision class stronger than described); the missing .3-needs-.7 edge
+added. Two nits also applied to .4 (LAUNCHING.md full path; the
+deliberate worktree-open vs workspace-create difference from
+dispatch_resolution made explicit). No hallucinated references; line
+anchors verified exact.
+
+Input-bead disposition (operator decision at the final gate): `ab-phr`,
+`ab-co5`, and `ab-blocked-lane-outcome-6bs` are fully absorbed — their
+specs live in ADR 0005's authority trail and their scope in children
+.1–.7. Proposed: close all three as absorbed-by-decomposition so the
+ready front matches the plan and a drain cannot double-dispatch their
+scope.
