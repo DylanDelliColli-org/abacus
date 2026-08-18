@@ -23,7 +23,16 @@ lifecycle: active
   accepted as a trim: the ephemeral runtime projection removed, the
   durable counts/caps/flake-retry retained since this ADR outlives the
   planning record. Cut 4 (defer run exit code 3) rejected as a
-  reaffirmation of the TEST-STRATEGY gate ruling.
+  reaffirmation of the TEST-STRATEGY gate ruling. Spec validation
+  complete (second fresh Codex context, own pane, five findings, all
+  applied 2026-08-18): the cross-cycle state blocker resolved by
+  deriving cycle bookkeeping from durable facts (adjudicated-head SHA in
+  the adjudication grammar, verdict-heading counting, deterministic
+  reviewer names); the Completed/AwaitingReview exit-code overlap
+  resolved in lane-state's favor (the D6 amendment, ratified at the
+  RECORD gate); the per-finding adjudication dispositions restored to
+  D4; the herdr and GitHub summaries narrowed to exactly what RESEARCH
+  measured.
 - **Date:** 2026-08-18
 - **Deciders:** operator (all directional rulings, four planning gates,
   the S3 enforcement ruling, the exit-code ruling), orchestrator session
@@ -52,11 +61,18 @@ dispatch and merge.
 Two unknowns were resolved by experiment before this record. First, the
 reported herdr monitoring failure is a state-name mismatch, not topology:
 codex agents settle at status `done` and never re-enter `idle`, so
-`agent wait --until idle` fails everywhere; `agent prompt --wait` and
-`agent wait --until done` work in all tested topologies. Second, required
-status checks are plan-gated: on the current production target (private,
-free plan) neither account can configure them — enforcement availability
-is a per-repo fact, not an auth question.
+`agent wait --until idle` never fires against a settled codex agent
+(measured in both split-pane and dedicated topologies; a pre-first-turn
+agent still reads genuinely `idle` and matches instantly).
+`agent prompt --wait` works in both tested topologies;
+`agent wait --until done` was verified in a dedicated root pane only.
+All monitoring evidence is codex-kind on the current herdr build. Second,
+required-check availability is plan-gated per repo, independently of
+auth: on the current production target (private, free plan) the
+configuration endpoints return the plan-upgrade refusal even to the
+admin account — the plan gate was the blocking gate there. On
+plan-eligible repositories, configuring enforcement still requires
+account-level admin.
 
 ## Decision
 
@@ -70,7 +86,20 @@ probes — `br show`, `herdr agent list`, `gh pr view` on the
 deterministic branch `lane/<bead-id>` — into: `Authoring`, `Blocked`,
 `AwaitingReview`, `ReworkRequested`, `Merged`, `Stalled`. An accepted
 adjudication whose PR has not merged remains `AwaitingReview` with a
-flipped status; no separate state.
+flipped status; no separate state. **Cycle bookkeeping is derived from
+durable facts only:** the branch head SHA, the count and cycle numbers
+of verdict-comment headings, the latest adjudication (which records the
+head SHA it adjudicated — D4), and the presence of live lane/reviewer
+agents under their deterministic names. `ReworkRequested` holds only
+while the branch head still equals the latest rework adjudication's
+adjudicated head; new commits mean the rework was performed and the lane
+returns to `AwaitingReview` for re-review. Within `AwaitingReview`, the
+reviewer-launch action fires only when no verdict comment exists for the
+current head and no live reviewer agent exists for the lane; a
+posted-but-unadjudicated verdict waits for the operator and never
+triggers a relaunch. A crash in the narrow window between reviewer
+launch and verdict post may at worst duplicate one review — accepted as
+rare and harmless.
 
 **D2 — The drain is sweep-then-dispatch, stateless, serially active.**
 Each iteration first re-derives every live lane and acts on transitions
@@ -91,20 +120,29 @@ ground rules with exactly one permitted write — `gh pr comment` on the
 target PR — and the required verdict grammar: `REFUTED` / `NOT REFUTED`,
 numbered findings, a Probes section), writes it to a gitignored tmp path
 in the target repo, and launches a fresh codex context in its own
-dedicated herdr workspace, prompted by file path and monitored with
-`prompt --wait`. Reviewer auth is codex subscription OAuth by
-construction. Reviewers never carry context between cycles — the
+dedicated herdr workspace under a deterministic per-bead-per-cycle agent
+name (the liveness signal D1's bookkeeping reads), prompted by file path
+and monitored with `prompt --wait`. Reviewer auth is codex subscription
+OAuth by construction. Reviewers never carry context between cycles — the
 author-warm / reviewer-ephemeral asymmetry is deliberate design. The
 reviewer works from the target repo's main checkout (production-proven; a
 same-branch worktree is impossible while the warm lane holds the branch).
 
 **D4 — Two-comment convention; the engine parses adjudications only.**
 The reviewer posts its full unadjudicated verdict as a PR comment. After
-the operator rules, the adjudication comment (`## Adjudication — cycle
-<k>` with an accepted or rework verdict) is posted human-side. The engine
-machine-parses exactly two textual signals ever: the worker's `BLOCKED`
-comment token and adjudication comments. Reviewer verdict bodies are
-never machine-parsed; an unadjudicated `REFUTED` blocks nothing. Status
+the operator rules, the adjudication comment is posted human-side, and
+its grammar preserves the production convention in full: the heading
+`## Adjudication — cycle <k>`, the overall verdict (accepted or rework),
+**per-finding dispositions** — accepted, rejected, or rerouted, each
+with its destination (rework-spec expectation, out-of-scope bead id, or
+fix commit SHA) — and the **adjudicated head SHA** of the branch state
+the ruling covered (the durable anchor D1's cycle bookkeeping and D5's
+rework generation both depend on). The engine machine-parses exactly two
+textual signals: the worker's `BLOCKED` comment token and adjudication
+comments. Reviewer verdict comments are recognized **by heading only**
+(`## Adversarial review — cycle <n>`) for existence and cycle counting;
+their bodies are never parsed, and an unadjudicated `REFUTED` blocks
+nothing. Status
 lifecycle via the commit-status API only (check runs are
 GitHub-Apps-only), context `adversarial-review`: `pending` posted once at
 review launch, flipped to `success` only by an accepting adjudication,
@@ -128,13 +166,18 @@ when clean, inverting the existing force path via the dirty-worktree
 error discrimination; `AwaitingReview`, `ReworkRequested`, and `Stalled`
 lanes are never reaped automatically.
 
-**D6 — Exit-code contract (operator-ruled at the TEST-STRATEGY gate).**
-`abacus drain` exits 0 whenever the loop completes without infrastructure
-error, regardless of class mix — the morning report is the signal.
-`abacus run` keeps 0 = Completed, gains one distinct nonzero (3) for a
-classified non-completed settle (Blocked / Stalled / AwaitingReview), and
-1 remains engine failure, so wrappers distinguish parked-by-design from
-breakage.
+**D6 — Exit-code contract.** Exit codes are owned by the lane-state
+layer — the overlap where a closed bead is simultaneously
+`BeadOutcome::Completed` and `LaneState::AwaitingReview` resolves in
+lane-state's favor. `abacus drain` exits 0 whenever the loop completes
+without infrastructure error, regardless of class mix — the morning
+report is the signal. `abacus run` exits 0 on the nominal settle — bead
+closed, PR up, reviewer launched (`AwaitingReview`) or `Merged` — 3 for
+a parked settle (`Blocked` / `Stalled`), and 1 for engine failure, so
+wrappers distinguish parked-by-design from breakage. This amends the
+TEST-STRATEGY gate proposal, which listed `AwaitingReview` in the
+nonzero set before the review gate made it the nominal run outcome;
+amendment presented for ratification at the RECORD gate.
 
 **D7 — Extraction precedes new states.** `dispatch_cycle` (~140 inline
 lines) is first decomposed behavior-preservingly into a lane-lifecycle

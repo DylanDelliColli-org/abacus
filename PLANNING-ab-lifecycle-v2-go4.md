@@ -674,3 +674,43 @@ AwaitingReview-with-flipped-status until Merged, alternative is a
 distinct `Landing` state; plus the `sanitize_agent_name` 32-char
 collision note rides the warm-rework bead ([no-test], not constructible
 with realistic ids).
+
+---
+
+*TEST-STRATEGY approved by operator 2026-08-18. Exit-code contract ruled
+as proposed at the gate (later amended by spec-validation finding 2 — see
+RECORD).*
+
+## RECORD
+
+An ADR is warranted and produced: **docs/adr/0005-lane-lifecycle-v2.md**
+(decisions D1–D8 with the test contract), placed under `docs/adr/` so the
+design-document review gate fires. Review evidence, both passes run as
+fresh Codex contexts in dedicated panes of workspace adr5-review:
+
+- **Bloat review** (PLANNING-adr5-bloat-review.md, one pass, four cuts,
+  anchor explicitly the abacus north star per the skills-y13 lesson):
+  operator-disposed — cuts 1 (defer the review cluster), 2 (drop
+  extraction-first), and 4 (defer run exit 3) rejected with recorded
+  grounds; cut 3 accepted as a trim (runtime projection removed, durable
+  test-contract content retained). The reviewer's revive-when condition
+  for cut 1 (adjudication inside the agent team, check-flip authority to
+  an agent reviewer for overnight runs) is recorded in the ADR status
+  block as a possible future evolution requiring a fresh operator ruling.
+- **Spec validation** (PLANNING-adr5-spec-review.md, five findings, all
+  applied): (1) BLOCKER — stateless probes could not distinguish consumed
+  from unconsumed review/rework cycles; resolved by durable-fact cycle
+  bookkeeping: the adjudication grammar gains the adjudicated-head SHA,
+  verdict comments are recognized by heading only for existence/cycle
+  counting, reviewer agent names are deterministic per bead and cycle,
+  and ReworkRequested holds only while the branch head equals the
+  adjudicated head. (2) HIGH — the Completed/AwaitingReview exit-code
+  overlap; resolved by lane-state ownership of exit codes, amending the
+  TEST-STRATEGY ruling so AwaitingReview is run's nominal exit-0 outcome
+  (ratification at this gate). (3) HIGH — per-finding adjudication
+  dispositions restored to D4 (preservation of the ab-phr two-comment
+  contract). (4)–(5) MEDIUM — herdr and GitHub context summaries narrowed
+  to exactly the measured boundaries.
+
+Both reviews' findings are resolved in the committed ADR; the operator's
+RECORD-gate approval covers the ADR as amended plus the D6 ratification.
