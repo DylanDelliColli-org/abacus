@@ -5,9 +5,9 @@ lifecycle: active
 
 # ADR 0005: Lane lifecycle v2 — sweep-based drain, adversarial review gate, warm lanes
 
-- **Status:** **proposed** 2026-08-18 — bloat review complete, spec
-  validation pending, then operator acceptance at the
-  `ab-lifecycle-v2-go4` RECORD gate. Governing north star: this
+- **Status:** **accepted** 2026-08-18, operator approval at the
+  `ab-lifecycle-v2-go4` RECORD gate, including ratification of the D6
+  amendment (AwaitingReview as run's nominal exit-0 outcome). Governing north star: this
   repository's own `NORTH-STAR.md` (anchor stated explicitly per the
   cross-repo anchor lesson recorded in bb-skills `skills-y13`). Bloat
   trail (fresh Codex pane, one pass, four cuts, operator-disposed
@@ -130,8 +130,11 @@ same-branch worktree is impossible while the warm lane holds the branch).
 
 **D4 — Two-comment convention; the engine parses adjudications only.**
 The reviewer posts its full unadjudicated verdict as a PR comment. After
-the operator rules, the adjudication comment is posted human-side, and
-its grammar preserves the production convention in full: the heading
+the operator rules, the adjudication comment is posted human-side **on
+the PR — the PR comment stream is the only adjudication parse surface;
+bead comments carry rework specs and operator notes and are never parsed
+as adjudications.** Its grammar preserves the production convention in
+full: the heading
 `## Adjudication — cycle <k>`, the overall verdict (accepted or rework),
 **per-finding dispositions** — accepted, rejected, or rerouted, each
 with its destination (rework-spec expectation, out-of-scope bead id, or
