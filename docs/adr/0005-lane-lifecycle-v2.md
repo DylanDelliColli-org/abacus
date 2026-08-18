@@ -5,11 +5,25 @@ lifecycle: active
 
 # ADR 0005: Lane lifecycle v2 — sweep-based drain, adversarial review gate, warm lanes
 
-- **Status:** **proposed** 2026-08-18 — pending the Codex bloat review and
-  spec validation of the design-doc gate, then operator acceptance at the
+- **Status:** **proposed** 2026-08-18 — bloat review complete, spec
+  validation pending, then operator acceptance at the
   `ab-lifecycle-v2-go4` RECORD gate. Governing north star: this
-  repository's own `NORTH-STAR.md` (the anchor is stated explicitly per
-  the cross-repo anchor lesson recorded in bb-skills `skills-y13`).
+  repository's own `NORTH-STAR.md` (anchor stated explicitly per the
+  cross-repo anchor lesson recorded in bb-skills `skills-y13`). Bloat
+  trail (fresh Codex pane, one pass, four cuts, operator-disposed
+  2026-08-18): cut 1 (defer the whole review cluster as violating
+  agent-team acceptance) rejected — the gate is the merge-boundary human
+  gate made structural, close-last stays agent-side, adjudication is
+  morning review, and the drain never blocks on it; the reviewer's
+  revive-when condition (adjudication moved inside the agent team) is
+  noted as a possible future evolution in which check-flip authority
+  moves to an agent reviewer for overnight runs — a fresh operator
+  ruling either way. Cut 2 (drop extraction-first) rejected — it is what
+  makes the new states testable. Cut 3 (shrink the test contract)
+  accepted as a trim: the ephemeral runtime projection removed, the
+  durable counts/caps/flake-retry retained since this ADR outlives the
+  planning record. Cut 4 (defer run exit code 3) rejected as a
+  reaffirmation of the TEST-STRATEGY gate ruling.
 - **Date:** 2026-08-18
 - **Deciders:** operator (all directional rulings, four planning gates,
   the S3 enforcement ruling, the exit-code ruling), orchestrator session
@@ -140,8 +154,8 @@ integration, zero new test files; real-br integration deliberately capped
 at 2 (the comment-id seam); gh interactions covered by captured-fixture
 parsers plus fake-shim forbidden-call assertions, never live GitHub; the
 wedge's drain-continues test is red against pre-cluster HEAD by
-construction. Measured baseline 9.5–12.9s against the 30s budget;
-projected post-cluster ~13–15s. The known br_roundtrip flake (a br-side
+construction. Measured baseline 9.5–12.9s against the 30s budget. The
+known br_roundtrip flake (a br-side
 `updated_at`-validation clock race, identified and jotted) gains a
 message-matched retry in the test helper as part of this cluster.
 
