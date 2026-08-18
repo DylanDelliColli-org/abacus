@@ -385,3 +385,155 @@ lands — an argument for scheduling it soon after, not for coupling.
 7. **The br_roundtrip flake is assumed benign and pre-existing** — if
    ordering-dependent, this cluster's new tests in the same file amplify
    it; identify before the test budget is set.
+
+---
+
+*RESEARCH approved by operator 2026-08-18. Operator ruling at the gate:
+S3 enforcement is advisory-plus-capability — the engine posts the status
+everywhere; making it a REQUIRED check is repo configuration owned by
+onboarding, available only where the repo's plan allows (abacus qualifies
+today; market-intelligence does not until a visibility/plan change).*
+
+## ARCHITECTURE
+
+Produced inline by the orchestrator (recorded substitution: the default
+gaudi producer's epic mode reviews an existing bead tree, which does not
+exist until DECOMPOSITION; gaudi's interface-coherence concerns are applied
+as the smell-risk checklist below). Locks the design for the approved frame
+using the RESEARCH findings and the operator's gate rulings.
+
+### A1 — Outcome model and the sweep/dispatch drain loop
+
+**Two-layer classification, both stateless.** `BeadOutcome` (src/lib.rs)
+stays a pure function of `br show` output and gains one variant: `Blocked` —
+bead `in_progress` AND its highest-id comment's leading token is `BLOCKED`
+(the deployed-contract signal; a later non-BLOCKED comment deliberately
+supersedes). A new drain-level `LaneState` is re-derived per cycle from
+three probes (`br show`, `herdr agent list`, `gh pr view --json
+state,mergedAt` by deterministic branch `lane/<bead-id>`): `Authoring`,
+`Blocked`, `AwaitingReview` (bead closed + PR open + no accepting
+adjudication), `ReworkRequested` (adjudication comment requests rework),
+`Merged`, `Stalled` (in_progress, agent settled, no BLOCKED comment).
+**No state file** — every state is re-derivable after a crash, preserving
+the engine's statelessness on a crash-prone host (RESEARCH §1).
+
+**The drain becomes sweep-then-dispatch per iteration.** Sweep: re-derive
+`LaneState` for every live lane (discovered from `herdr agent list` names
+matching `sanitize_agent_name` of claimed/closed beads plus open `lane/*`
+PRs, the `enumerate_candidates` pattern); act on transitions — launch a
+reviewer for a newly `AwaitingReview` lane, flip status per a new
+adjudication comment, redispatch rework, reap `Merged` lanes, park
+`Blocked`/`Stalled` with per-class reporting. Dispatch: if no rework was
+dispatched this iteration, claim the next ready bead as today. **At most one
+ACTIVE worker turn at a time** — the engine still blocks on `prompt --wait`
+— so N6 holds structurally: concurrency exists only as settled-warm lanes
+awaiting adjudication. Rework outranks fresh dispatch. `cmd_run` keeps
+single-cycle semantics with per-class exit reporting; only `cmd_drain`
+loops the sweep. Drain never aborts on `Blocked`/`AwaitingReview`/
+`Stalled`; it records, reports, continues, and exits when no ready beads
+remain AND no lane transition is pending, summarizing lanes by class (the
+morning report, S6).
+
+### A2 — Review gate (engine-owned)
+
+Review launch lives in the ENGINE (a new module, working name
+`src/review.rs`), not in orchestrator choreography — zero-intervention
+overnight requires it. On `AwaitingReview`: generate the refutation brief
+from the bead (description + comments as the authority trail, the target
+repo's AGENTS.md as the contract reference, per-bead refutation targets,
+read-only ground rules with EXACTLY one permitted write — `gh pr comment`
+on the target PR — and the required verdict line REFUTED / NOT REFUTED with
+numbered findings plus a Probes section, template shapes per RESEARCH §4).
+Write the brief to a gitignored tmp path in the target repo (onboarding
+verifies the ignore rule). Launch: dedicated herdr workspace per reviewer,
+`agent start --kind codex` (subscription OAuth by construction — N2 holds
+structurally), prompt by file path, monitored with `prompt --wait`
+(RESEARCH §2); reviewer pane is disposable after its verdict comment
+posts. Reviewer cwd is the TARGET REPO MAIN CHECKOUT with `gh pr
+diff`/`view` for the delta — the production-proven posture; a same-branch
+worktree is impossible anyway (the warm lane holds the branch), and a
+detached-HEAD worktree is deferred until main-checkout contention is
+actually observed (MVP-first).
+
+### A3 — Status lifecycle (advisory + onboarding-owned enforcement)
+
+Commit-status API only, context `adversarial-review` (check runs are
+GitHub-Apps-only, RESEARCH §3). Engine posts `pending` when a lane first
+reaches `AwaitingReview`, and flips to `success` only when the sweep parses
+an adjudication comment whose verdict accepts (`## Adjudication — cycle
+<k>` + accepted/NOT-REFUTED verdict line — the two-comment convention: the
+engine parses ONLY adjudication comments and the worker BLOCKED token,
+never reviewer verdict bodies). REFUTED-with-rework keeps the status
+`pending` through cycles; the engine never posts `failure` — a refuted PR
+is being reworked, not dead; abandonment is a human PR-close. The engine
+NEVER writes branch-protection or ruleset config: making
+`adversarial-review` a required check is an onboarding act on repos whose
+plan allows it (operator ruling at the RESEARCH gate), mirroring ADR
+0003's posture that GitHub owns enforcement. Reader quirk honored: the
+combined-status endpoint reports `pending` when zero statuses exist —
+readers must distinguish absent from posted-pending (RESEARCH §3).
+
+### A4 — Warm rework (S4)
+
+On `ReworkRequested`: the engine prompts the EXISTING agent (name
+re-derived via `sanitize_agent_name(bead_id)`) with a rework spec generated
+from the adjudication comment (accepted findings + rework commit
+expectations), on the same branch; the bead is reopened by the
+adjudicating side per the existing convention. Recovery: if the warm agent
+is gone (crash, operator close), recreate the lane on the SAME existing
+`lane/<bead-id>` branch — the implementing bead must verify herdr's
+worktree-create behavior against a pre-existing branch and fall back to
+`git worktree add` + `herdr workspace create --cwd` if unsupported (bead-
+level verification, not an open question). Reap moves from settle to:
+`Merged` (always, force allowed as today) or operator abandon; `Blocked`
+lanes reap only when clean (invert the existing force path via
+`is_dirty_worktree_remove_error` — RESEARCH §1).
+
+### Contracts locked (consumed by TEST-STRATEGY and DECOMPOSITION)
+
+1. `BeadOutcome::Blocked` classification rule (highest-comment-id, leading
+   token `BLOCKED`, supersede-able).
+2. `LaneState` enum and its three-probe derivation; no persisted state.
+3. Sweep-then-dispatch drain; one active worker turn; drain exit = no
+   ready beads and no pending transitions; per-class summary.
+4. Refutation-brief template (authority map, targets, one-write ground
+   rule, verdict-line + Probes contract).
+5. Adjudication-comment grammar as the ONLY machine-parsed review text;
+   status flip rules (pending→success; never failure).
+6. Status context `adversarial-review` via commit-status API; enforcement
+   is onboarding-owned repo config.
+7. Reviewer: ephemeral, dedicated workspace, main-checkout cwd, codex
+   OAuth, `prompt --wait` monitoring.
+8. Rework: same agent, same branch; deterministic-name recovery path.
+
+### Smell and migration risks (the gaudi checklist)
+
+- `dispatch_cycle` (already ~140 inline lines) absorbing sweep + review +
+  rework is a god-function trajectory. Decision: Bundle 1's first act is
+  extracting the lane lifecycle into its own module; `dispatch_cycle`
+  becomes orchestration over named phases. The extraction is behavior-
+  preserving and precedes new states.
+- Comment-grammar coupling: three textual contracts (BLOCKED token,
+  adjudication heading/verdict, brief template) now bind engine parsing to
+  deployed repo contracts. Mitigation: single `src/review.rs` (or shared
+  types seam) owns every grammar constant; AGENTS.md templates cite them;
+  tests pin exact strings.
+- Deterministic-name collision: `sanitize_agent_name` truncates at 32
+  chars — DECOMPOSITION notes the collision class (RESEARCH assumption 5);
+  no design change now.
+- The sweep multiplies gh calls per iteration (per-lane PR probes).
+  Mitigation: probe only lanes whose state can have changed (Blocked and
+  Merged are absorbing until human action); acceptable at current lane
+  counts; revisit only on observed rate pressure.
+
+### Research assumptions disposition
+
+Assumption 3 resolved by the S3 gate ruling (advisory + onboarding-owned
+enforcement; success-metric wording adjusted at DECOMPOSITION to "verdict
+comment + posted status" with required-enforcement where the repo supports
+it). Assumption 6 resolved structurally (serial active turn + sweep).
+Assumptions 1–2 (codex-only monitoring evidence) are carried as contract
+7's caveat: any claude-kind lane re-verifies settle vocabulary first.
+Assumptions 4, 5, 7 carried into DECOMPOSITION/TEST-STRATEGY as noted. No
+research finding was silently promoted; no assumption invalidates the
+frame.
