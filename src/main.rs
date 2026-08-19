@@ -694,6 +694,7 @@ enum DispatchCycle {
 struct SettledLane {
     bead_id: String,
     lane: abacus::Lane,
+    lane_available: bool,
     outcome: abacus::BeadOutcome,
     elapsed_secs: u64,
 }
@@ -711,42 +712,69 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
             println!("no ready beads in {repo_str}; nothing to dispatch");
             Ok(0)
         }
-        DispatchCycle::Settled(settled) => match settled.outcome {
-            abacus::BeadOutcome::Completed => {
-                lane_reap(settled.outcome, &settled.lane)?;
-                println!(
-                    "bead {} is closed; worker completed in {}",
-                    settled.bead_id,
-                    format_lane_duration(settled.elapsed_secs)
-                );
-                Ok(0)
+        DispatchCycle::Settled(settled) => {
+            let state = derive_settled_lane_state(&repo, &settled, false)?;
+            match state {
+                None => {
+                    lane_reap(settled.outcome, &settled.lane)?;
+                    println!(
+                        "bead {} is closed; worker completed in {}",
+                        settled.bead_id,
+                        format_lane_duration(settled.elapsed_secs)
+                    );
+                    Ok(0)
+                }
+                Some(LaneState::AwaitingReview) => {
+                    println!(
+                        "bead {} lane is awaiting-review after {}; leaving it warm",
+                        settled.bead_id,
+                        format_lane_duration(settled.elapsed_secs)
+                    );
+                    Ok(0)
+                }
+                Some(LaneState::Merged) => {
+                    lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+                    println!(
+                        "bead {} lane is merged; reaped after {}",
+                        settled.bead_id,
+                        format_lane_duration(settled.elapsed_secs)
+                    );
+                    Ok(0)
+                }
+                Some(LaneState::Blocked) => {
+                    lane_reap_blocked(&settled.lane)?;
+                    eprintln!(
+                        "bead {} is in_progress; worker reported BLOCKED after {}",
+                        settled.bead_id,
+                        format_lane_duration(settled.elapsed_secs)
+                    );
+                    Ok(3)
+                }
+                Some(LaneState::Stalled) => {
+                    match settled.outcome {
+                        abacus::BeadOutcome::NeverEngaged => eprintln!(
+                            "bead {} is open; lane is stalled because the worker never engaged after {}",
+                            settled.bead_id,
+                            format_lane_duration(settled.elapsed_secs)
+                        ),
+                        _ => eprintln!(
+                            "bead {} is in_progress; lane is stalled after worker settled before completing ({})",
+                            settled.bead_id,
+                            format_lane_duration(settled.elapsed_secs)
+                        ),
+                    }
+                    Ok(3)
+                }
+                Some(LaneState::Authoring | LaneState::ReworkRequested) => {
+                    eprintln!(
+                        "bead {} settled into parked lane state {state:?} after {}",
+                        settled.bead_id,
+                        format_lane_duration(settled.elapsed_secs)
+                    );
+                    Ok(3)
+                }
             }
-            abacus::BeadOutcome::Blocked => {
-                lane_reap_blocked(&settled.lane)?;
-                eprintln!(
-                    "bead {} is in_progress; worker reported BLOCKED after {}",
-                    settled.bead_id,
-                    format_lane_duration(settled.elapsed_secs)
-                );
-                Ok(3)
-            }
-            abacus::BeadOutcome::Incomplete => {
-                eprintln!(
-                    "bead {} is in_progress; lane is stalled after worker settled before completing ({})",
-                    settled.bead_id,
-                    format_lane_duration(settled.elapsed_secs)
-                );
-                Ok(3)
-            }
-            abacus::BeadOutcome::NeverEngaged => {
-                eprintln!(
-                    "bead {} is open; lane is stalled because the worker never engaged after {}",
-                    settled.bead_id,
-                    format_lane_duration(settled.elapsed_secs)
-                );
-                Ok(3)
-            }
-        },
+        }
         DispatchCycle::ClaimLost(_) => unreachable!("run treats claim failures as errors"),
     }
 }
@@ -852,36 +880,44 @@ fn sweep_live_lanes(
         .into_iter()
         .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
         .collect();
-    if agents.is_empty() {
-        return Ok(false);
-    }
-
     let beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
     let mut authoring = false;
-    for bead in beads
-        .into_iter()
-        .filter(|bead| matches!(bead.status.as_str(), "in_progress" | "closed"))
-    {
+    for bead in beads.into_iter().filter(|bead| {
+        bead.status == "in_progress"
+            || (bead.status == "closed" && {
+                let agent_name = sanitize_agent_name(&bead.id);
+                agents
+                    .iter()
+                    .any(|agent| agent.name.as_deref() == Some(agent_name.as_str()))
+            })
+    }) {
         let agent_name = sanitize_agent_name(&bead.id);
-        let Some(agent) = agents
+        let agent = agents
             .iter()
-            .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()))
-        else {
-            continue;
-        };
+            .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
         let outcome = probe_bead_outcome(repo, &bead.id)?;
-        let worker_active = agent.agent_status == "working";
-        let lane = abacus::Lane {
-            workspace_id: agent.workspace_id.clone(),
-            pane_id: agent.pane_id.clone(),
-            checkout_path: agent.cwd.clone(),
-            branch: format!("lane/{}", bead.id),
-        };
+        let worker_active = agent.is_some_and(|agent| agent.agent_status == "working");
+        let lane = agent.map_or_else(
+            || abacus::Lane {
+                workspace_id: String::new(),
+                pane_id: String::new(),
+                checkout_path: repo.to_string_lossy().into_owned(),
+                branch: format!("lane/{}", bead.id),
+            },
+            |agent| abacus::Lane {
+                workspace_id: agent.workspace_id.clone(),
+                pane_id: agent.pane_id.clone(),
+                checkout_path: agent.cwd.clone(),
+                branch: format!("lane/{}", bead.id),
+            },
+        );
+        let lane_available = agent.is_some();
         let state = record_drain_settle(
             repo,
             SettledLane {
                 bead_id: bead.id,
                 lane,
+                lane_available,
                 outcome,
                 elapsed_secs: 0,
             },
@@ -925,6 +961,10 @@ fn is_no_pull_request_error(stderr: &str) -> bool {
     stderr.contains("no pull requests found")
         || stderr.contains("Could not resolve to a PullRequest")
         || stderr.contains("no open pull requests")
+        || stderr.contains("no git remotes found")
+        || stderr.contains(
+            "none of the git remotes configured for this repository point to a known GitHub host",
+        )
 }
 
 fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestProbe>, String> {
@@ -952,28 +992,18 @@ fn record_drain_settle(
     report: &mut MorningReport,
     reported_states: &mut BTreeSet<(String, String)>,
 ) -> Result<Option<LaneState>, String> {
-    let pull_request = if settled.outcome == abacus::BeadOutcome::Completed {
-        probe_pull_request(repo, &settled.lane.branch)?
-    } else {
-        None
-    };
-
-    if settled.outcome == abacus::BeadOutcome::Completed && pull_request.is_none() {
+    let state = derive_settled_lane_state(repo, &settled, worker_active)?;
+    if state.is_none() {
         let key = (settled.bead_id.clone(), "completed".to_owned());
         if reported_states.insert(key) {
-            lane_reap(settled.outcome, &settled.lane)?;
+            if settled.lane_available {
+                lane_reap(settled.outcome, &settled.lane)?;
+            }
             report.record_completed(&settled.bead_id, settled.elapsed_secs);
         }
         return Ok(None);
     }
-
-    let state = derive_lane_state(LaneStateInputs {
-        bead_outcome: settled.outcome,
-        worker_active,
-        pull_request: pull_request.as_ref(),
-        verdict_heading_count: 0,
-        latest_adjudication: None,
-    });
+    let state = state.expect("the completed-without-PR case returned above");
     if state == LaneState::Authoring {
         return Ok(Some(state));
     }
@@ -983,10 +1013,14 @@ fn record_drain_settle(
     }
     match state {
         LaneState::Blocked => {
-            lane_reap_blocked(&settled.lane)?;
+            if settled.lane_available {
+                lane_reap_blocked(&settled.lane)?;
+            }
         }
         LaneState::Merged => {
-            lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+            if settled.lane_available {
+                lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+            }
         }
         LaneState::Authoring
         | LaneState::AwaitingReview
@@ -995,6 +1029,30 @@ fn record_drain_settle(
     }
     report.record_state(state, &settled.bead_id, settled.elapsed_secs);
     Ok(Some(state))
+}
+
+/// Derive the shared lane state for a settled worker. A completed bead with no
+/// PR remains the legacy completed-and-reap case, which has no LaneState row.
+fn derive_settled_lane_state(
+    repo: &Path,
+    settled: &SettledLane,
+    worker_active: bool,
+) -> Result<Option<LaneState>, String> {
+    let pull_request = if settled.outcome == abacus::BeadOutcome::Completed {
+        probe_pull_request(repo, &settled.lane.branch)?
+    } else {
+        None
+    };
+    if settled.outcome == abacus::BeadOutcome::Completed && pull_request.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(derive_lane_state(LaneStateInputs {
+        bead_outcome: settled.outcome,
+        worker_active,
+        pull_request: pull_request.as_ref(),
+        verdict_heading_count: 0,
+        latest_adjudication: None,
+    })))
 }
 
 fn parse_symbolic_default_branch(output: &str) -> Result<String, String> {
@@ -1103,6 +1161,7 @@ fn dispatch_cycle(
     Ok(DispatchCycle::Settled(SettledLane {
         bead_id: bead.id,
         lane,
+        lane_available: true,
         outcome,
         elapsed_secs: lane_started.elapsed().as_secs(),
     }))
@@ -1171,6 +1230,10 @@ mod tests {
         );
         assert!(is_no_pull_request_error(
             "no pull requests found for branch lane/ab-none"
+        ));
+        assert!(is_no_pull_request_error("no git remotes found"));
+        assert!(is_no_pull_request_error(
+            "none of the git remotes configured for this repository point to a known GitHub host"
         ));
         assert!(!is_no_pull_request_error("HTTP 502 from github.com"));
     }
