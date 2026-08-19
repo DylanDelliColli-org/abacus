@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::{
     BeadOutcome, Lane, ReadyBead, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
     is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created, should_reap_lane,
+    target_rust_version,
 };
 
 /// The live state of a lane, re-derived from substrate probes each cycle.
@@ -221,7 +222,13 @@ pub fn lane_prompt(
     default_branch: &str,
     agent_name: &str,
 ) -> Result<LanePrompt, String> {
-    let prompt = dispatch_prompt(&bead.id, &lane.branch, default_branch);
+    let rust_version = target_rust_version(Path::new(&lane.checkout_path))?;
+    let prompt = dispatch_prompt(
+        &bead.id,
+        &lane.branch,
+        default_branch,
+        rust_version.as_deref(),
+    );
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
