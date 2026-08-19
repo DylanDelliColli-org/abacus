@@ -156,6 +156,7 @@ fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
 
     let br_calls = workspace.0.join("br-calls");
     let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
     let active_bead = workspace.0.join("active-bead");
     let blocked = workspace.0.join("blocked");
     let completed = workspace.0.join("completed");
@@ -229,9 +230,13 @@ fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
     let fake_gh = fake_bin.join("gh");
     std::fs::write(
         &fake_gh,
-        "#!/bin/sh\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+            gh_calls.display(),
+        ),
     )
     .unwrap();
+    std::fs::write(&gh_calls, "").unwrap();
 
     for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
         make_executable(fake_program);
@@ -275,6 +280,11 @@ fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
     assert!(
         !calls.lines().any(|call| call.ends_with(" --force")),
         "a blocked lane must never be force-reaped:\n{calls}"
+    );
+    let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    assert!(
+        !gh_calls.lines().any(|call| call.contains("lane/it-first")),
+        "Blocked must stay absorbing and PR-unprobed across this multi-sweep drain:\n{gh_calls}"
     );
 }
 
@@ -722,6 +732,161 @@ fn restart_sweep_reports_absent_closed_merged_pr_as_merged() {
             .any(|call| call.starts_with("worktree remove")),
         "there is no recorded workspace to reap:\n{herdr_calls}"
     );
+}
+
+fn run_in_progress_merged_pr_sweep(
+    tag: &str,
+    bead_id: &str,
+    agent_status: Option<&str>,
+) -> (std::process::Output, String, String) {
+    let workspace = TempDir::new(tag);
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
+    let agent_listed = workspace.0.join("agent-listed");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               printf '%s\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
+             elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
+               printf 'fixture claim loss\n' >&2; exit 1\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"status\":\"in_progress\",\"comments\":[]}}]\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+        ),
+    )
+    .unwrap();
+
+    let agent_json = match agent_status {
+        None => r#"{"result":{"agents":[]}}"#.to_owned(),
+        Some(status) => format!(
+            r#"{{"result":{{"agents":[{{"name":"{bead_id}","agent_status":"{status}","cwd":"{}","workspace_id":"workspace-{bead_id}","pane_id":"pane-{bead_id}"}}]}}}}"#,
+            workspace.0.display(),
+        ),
+    };
+    let done_agent_json = agent_status.map(|_| {
+        format!(
+            r#"{{"result":{{"agents":[{{"name":"{bead_id}","agent_status":"done","cwd":"{}","workspace_id":"workspace-{bead_id}","pane_id":"pane-{bead_id}"}}]}}}}"#,
+            workspace.0.display(),
+        )
+    });
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{herdr_calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               if [ -f '{agent_listed}' ]; then printf '%s\n' '{done_agent_json}'; else : > '{agent_listed}'; printf '%s\n' '{agent_json}'; fi\n\
+             elif [ \"$1 $2\" = \"worktree remove\" ]; then\n\
+               exit 0\n\
+             fi\n",
+            herdr_calls = herdr_calls.display(),
+            agent_listed = agent_listed.display(),
+            agent_json = agent_json,
+            done_agent_json = done_agent_json.unwrap_or_else(|| agent_json.clone()),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nprintf '%s\n' '{{\"state\":\"MERGED\",\"mergedAt\":\"2026-08-19T19:00:00Z\",\"headRefOid\":\"merged-head\"}}'\n",
+            gh_calls.display(),
+        ),
+    )
+    .unwrap();
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+    )
+    .unwrap();
+    std::fs::write(&gh_calls, "").unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    (
+        output,
+        std::fs::read_to_string(herdr_calls).unwrap(),
+        std::fs::read_to_string(gh_calls).unwrap(),
+    )
+}
+
+fn assert_in_progress_merged_row(agent_status: Option<&str>, row: &str) {
+    let bead_id = format!("it-merged-{row}");
+    let (output, herdr_calls, gh_calls) =
+        run_in_progress_merged_pr_sweep(row, &bead_id, agent_status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("merged: 1 [{bead_id}")),
+        "in_progress + {row} + MERGED PR did not honor Merged precedence: {stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!("stalled: 1 [{bead_id}")),
+        "Merged was incorrectly parked as Stalled: {stdout}"
+    );
+    assert_eq!(
+        gh_calls,
+        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
+        "Merged must be probed once and then absorbed across the forced second sweep"
+    );
+    let removals: Vec<_> = herdr_calls
+        .lines()
+        .filter(|call| call.starts_with("worktree remove"))
+        .collect();
+    if agent_status.is_some() {
+        assert_eq!(
+            removals,
+            [format!("worktree remove --workspace workspace-{bead_id}")],
+            "the recorded Merged workspace must be reaped:\n{herdr_calls}"
+        );
+    } else {
+        assert!(
+            removals.is_empty(),
+            "an absent agent has no recorded workspace to reap:\n{herdr_calls}"
+        );
+    }
+}
+
+#[test]
+fn restart_sweep_reports_absent_in_progress_merged_pr_as_merged() {
+    assert_in_progress_merged_row(None, "absent");
+}
+
+#[test]
+fn restart_sweep_reports_done_in_progress_merged_pr_as_merged() {
+    assert_in_progress_merged_row(Some("done"), "done");
+}
+
+#[test]
+fn restart_sweep_reports_working_in_progress_merged_pr_as_merged() {
+    assert_in_progress_merged_row(Some("working"), "working");
 }
 
 #[test]

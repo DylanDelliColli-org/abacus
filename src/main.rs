@@ -785,17 +785,17 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
     let mut lost_claims = BTreeSet::new();
     let mut report = MorningReport::default();
     let mut reported_states = BTreeSet::new();
-    // Invocation-local only: restart must re-derive durable closed-lane facts.
-    // Within a run, no-PR and Merged results are terminal; OPEN stays live so
-    // a later sweep can observe its merge.
-    let mut absorbed_closed_beads = BTreeSet::new();
+    // Invocation-local only: restart must re-derive durable lane facts.
+    // Within a run, Merged and closed/no-PR results are terminal; live lanes
+    // stay eligible so a later sweep can observe their transitions.
+    let mut absorbed_terminal_beads = BTreeSet::new();
 
     loop {
         if sweep_live_lanes(
             &repo,
             &mut report,
             &mut reported_states,
-            &mut absorbed_closed_beads,
+            &mut absorbed_terminal_beads,
         )? {
             std::thread::sleep(Duration::from_secs(2));
             continue;
@@ -883,7 +883,7 @@ fn sweep_live_lanes(
     repo: &Path,
     report: &mut MorningReport,
     reported_states: &mut BTreeSet<(String, String)>,
-    absorbed_closed_beads: &mut BTreeSet<String>,
+    absorbed_terminal_beads: &mut BTreeSet<String>,
 ) -> Result<bool, String> {
     let agents = parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?;
     let agents: Vec<_> = agents
@@ -893,8 +893,8 @@ fn sweep_live_lanes(
     let beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
     let mut authoring = false;
     for bead in beads {
-        if bead.status != "in_progress"
-            && (bead.status != "closed" || absorbed_closed_beads.contains(&bead.id))
+        if absorbed_terminal_beads.contains(&bead.id)
+            || (bead.status != "in_progress" && bead.status != "closed")
         {
             continue;
         }
@@ -934,8 +934,8 @@ fn sweep_live_lanes(
             report,
             reported_states,
         )?;
-        if bead_is_closed && matches!(state, None | Some(LaneState::Merged)) {
-            absorbed_closed_beads.insert(bead_id);
+        if state == Some(LaneState::Merged) || (bead_is_closed && state.is_none()) {
+            absorbed_terminal_beads.insert(bead_id);
         }
         authoring |= state == Some(LaneState::Authoring);
     }
@@ -1050,10 +1050,10 @@ fn derive_settled_lane_state(
     settled: &SettledLane,
     worker_active: bool,
 ) -> Result<Option<LaneState>, String> {
-    let pull_request = if settled.outcome == abacus::BeadOutcome::Completed {
-        probe_pull_request(repo, &settled.lane.branch)?
-    } else {
+    let pull_request = if settled.outcome == abacus::BeadOutcome::Blocked {
         None
+    } else {
+        probe_pull_request(repo, &settled.lane.branch)?
     };
     if settled.outcome == abacus::BeadOutcome::Completed && pull_request.is_none() {
         return Ok(None);
