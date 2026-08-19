@@ -3,6 +3,7 @@
 
 pub mod land;
 pub mod lane;
+pub mod review;
 
 use serde::Deserialize;
 
@@ -131,7 +132,7 @@ struct BeadComment {
 }
 
 fn has_blocked_leading_token(text: &str) -> bool {
-    let Some(remainder) = text.strip_prefix(lane::BLOCKED_COMMENT_TOKEN) else {
+    let Some(remainder) = text.strip_prefix(review::BLOCKED_COMMENT_TOKEN) else {
         return false;
     };
     remainder
@@ -220,7 +221,8 @@ pub fn dispatch_prompt(bead_id: &str, branch: &str, default_branch: &str) -> Str
          confirmation. If a PR already exists for `{branch}`, treat that existing PR as success \
          rather than a blocker. Only after the push has succeeded and the PR exists, run \
          `br close {bead_id}` as your final act. Verify the worktree is clean. If you cannot \
-         proceed, say BLOCKED and why, and stop."
+         proceed, say {blocked_token} and why, and stop.",
+        blocked_token = review::BLOCKED_COMMENT_TOKEN,
     )
 }
 
