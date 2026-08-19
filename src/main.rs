@@ -890,6 +890,14 @@ fn parse_lane_beads(json: &str) -> Result<Vec<ListedLaneBead>, String> {
     Ok(envelope.issues)
 }
 
+fn parse_local_lane_branch_ids(refs: &str) -> BTreeSet<String> {
+    refs.lines()
+        .filter_map(|branch| branch.strip_prefix("lane/"))
+        .filter(|bead_id| !bead_id.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn agent_belongs_to_repo(agent: &AgentView, repo: &Path) -> bool {
     let Some(repo_name) = repo.file_name() else {
         return false;
@@ -915,37 +923,49 @@ fn sweep_live_lanes(
         .into_iter()
         .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
         .collect();
-    let beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
+    let listed_beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
+    let mut bead_ids: BTreeSet<_> = listed_beads
+        .into_iter()
+        .filter(|bead| bead.status == "in_progress" || bead.status == "closed")
+        .map(|bead| bead.id)
+        .collect();
+    let local_lane_refs = capture(
+        "git",
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/lane/",
+        ],
+        Some(repo),
+    )?;
+    bead_ids.extend(parse_local_lane_branch_ids(&local_lane_refs));
     let mut authoring = false;
-    for bead in beads {
-        if absorbed_terminal_beads.contains(&bead.id)
-            || (bead.status != "in_progress" && bead.status != "closed")
-        {
+    for bead_id in bead_ids {
+        if absorbed_terminal_beads.contains(&bead_id) {
             continue;
         }
-        let bead_is_closed = bead.status == "closed";
-        let agent_name = sanitize_agent_name(&bead.id);
+        let outcome = probe_bead_outcome(repo, &bead_id)?;
+        let bead_is_closed = outcome == abacus::BeadOutcome::Completed;
+        let agent_name = sanitize_agent_name(&bead_id);
         let agent = agents
             .iter()
             .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
-        let outcome = probe_bead_outcome(repo, &bead.id)?;
         let worker_active = agent.is_some_and(|agent| agent.agent_status == "working");
         let lane = agent.map_or_else(
             || abacus::Lane {
                 workspace_id: String::new(),
                 pane_id: String::new(),
                 checkout_path: repo.to_string_lossy().into_owned(),
-                branch: format!("lane/{}", bead.id),
+                branch: format!("lane/{bead_id}"),
             },
             |agent| abacus::Lane {
                 workspace_id: agent.workspace_id.clone(),
                 pane_id: agent.pane_id.clone(),
                 checkout_path: agent.cwd.clone(),
-                branch: format!("lane/{}", bead.id),
+                branch: format!("lane/{bead_id}"),
             },
         );
         let lane_available = agent.is_some();
-        let bead_id = bead.id;
         let state = record_drain_settle(
             repo,
             SettledLane {
@@ -1524,6 +1544,16 @@ mod tests {
         assert_eq!(agents[1].agent_status, "done");
         assert!(agents[2].name.is_none());
         assert!(parse_agent_list("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn local_lane_candidate_parser_is_bounded_to_local_lane_refs() {
+        let refs = "lane/ab-closed\nlane/ab-in-progress\nmain\norigin/lane/ab-remote\nlane/\n";
+
+        assert_eq!(
+            parse_local_lane_branch_ids(refs),
+            BTreeSet::from(["ab-closed".to_owned(), "ab-in-progress".to_owned()])
+        );
     }
 
     #[test]

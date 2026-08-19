@@ -94,7 +94,7 @@ fn drain_reselects_after_a_lost_claim_and_dispatches_the_next_bead() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelif [ \"$1\" = \"for-each-ref\" ]; then\n  :\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
     )
     .unwrap();
 
@@ -223,7 +223,7 @@ fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelif [ \"$1\" = \"for-each-ref\" ]; then\n  :\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
     )
     .unwrap();
 
@@ -340,7 +340,7 @@ fn drain_records_awaiting_review_and_exits_when_nothing_is_actionable() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then :; else exit 2; fi\n",
     )
     .unwrap();
     let fake_gh = fake_bin.join("gh");
@@ -433,7 +433,7 @@ fn run_classifies_closed_open_pr_as_awaiting_review_and_keeps_lane_warm() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then :; else exit 2; fi\n",
     )
     .unwrap();
     let fake_gh = fake_bin.join("gh");
@@ -539,7 +539,7 @@ fn restart_sweep_reports_absent_in_progress_agent_as_stalled_and_continues() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then :; else exit 2; fi\n",
     )
     .unwrap();
     let fake_gh = fake_bin.join("gh");
@@ -608,7 +608,7 @@ fn run_absent_closed_pr_sweep(
         format!(
             "#!/bin/sh\n\
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
-               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\n'\n\
+               printf '{{\"issues\":[]}}\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\n' '{ready_json}'\n\
              elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
@@ -650,7 +650,16 @@ fn run_absent_closed_pr_sweep(
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n\
+               printf 'origin/main\\n'\n\
+             elif [ \"$1\" = \"for-each-ref\" ]; then\n\
+               printf 'lane/{bead_id}\\n'\n\
+             else\n\
+               printf 'unexpected git call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n"
+        ),
     )
     .unwrap();
     std::fs::write(&gh_calls, "").unwrap();
@@ -782,7 +791,7 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
         format!(
             "#!/bin/sh\n\
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
-               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+               printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
              elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
@@ -827,7 +836,7 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        format!("#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then printf 'lane/{bead_id}\\n'; else exit 2; fi\n"),
     )
     .unwrap();
     for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
@@ -918,7 +927,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
         format!(
             "#!/bin/sh\n\
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
-               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+               printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                IFS= read -r current_phase < '{phase}'\n\
                if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
@@ -992,7 +1001,7 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        format!("#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then printf 'lane/{bead_id}\\n'; else exit 2; fi\n"),
     )
     .unwrap();
     for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
@@ -1095,9 +1104,10 @@ fn restart_sweep_reports_absent_closed_merged_pr_as_merged() {
     );
 }
 
-fn run_in_progress_merged_pr_sweep(
+fn run_merged_pr_sweep(
     tag: &str,
     bead_id: &str,
+    bead_status: &str,
     agent_status: Option<&str>,
 ) -> (std::process::Output, String, String) {
     let workspace = TempDir::new(tag);
@@ -1106,6 +1116,16 @@ fn run_in_progress_merged_pr_sweep(
     let herdr_calls = workspace.0.join("herdr-calls");
     let gh_calls = workspace.0.join("gh-calls");
     let agent_listed = workspace.0.join("agent-listed");
+    let listed_beads = if bead_status == "closed" {
+        r#"{"issues":[]}"#.to_owned()
+    } else {
+        format!(r#"{{"issues":[{{"id":"{bead_id}","status":"{bead_status}"}}]}}"#)
+    };
+    let local_lane_ref = if bead_status == "closed" {
+        format!("lane/{bead_id}\\n")
+    } else {
+        String::new()
+    };
 
     let fake_br = fake_bin.join("br");
     std::fs::write(
@@ -1113,13 +1133,13 @@ fn run_in_progress_merged_pr_sweep(
         format!(
             "#!/bin/sh\n\
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
-               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}\n'\n\
+               printf '%s\n' '{listed_beads}'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
              elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
                printf 'fixture claim loss\n' >&2; exit 1\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
-               printf '[{{\"status\":\"in_progress\",\"comments\":[]}}]\n'\n\
+               printf '[{{\"status\":\"{bead_status}\",\"comments\":[]}}]\n'\n\
              else\n\
                printf 'unexpected br call: %s\n' \"$*\" >&2; exit 2\n\
              fi\n",
@@ -1170,7 +1190,9 @@ fn run_in_progress_merged_pr_sweep(
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        format!(
+            "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then printf '{local_lane_ref}'; else exit 2; fi\n"
+        ),
     )
     .unwrap();
     std::fs::write(&gh_calls, "").unwrap();
@@ -1194,10 +1216,10 @@ fn run_in_progress_merged_pr_sweep(
     )
 }
 
-fn assert_in_progress_merged_row(agent_status: Option<&str>, row: &str) {
+fn assert_merged_row(bead_status: &str, agent_status: Option<&str>, row: &str) {
     let bead_id = format!("it-merged-{row}");
     let (output, herdr_calls, gh_calls) =
-        run_in_progress_merged_pr_sweep(row, &bead_id, agent_status);
+        run_merged_pr_sweep(row, &bead_id, bead_status, agent_status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -1206,7 +1228,7 @@ fn assert_in_progress_merged_row(agent_status: Option<&str>, row: &str) {
     );
     assert!(
         stdout.contains(&format!("merged: 1 [{bead_id}")),
-        "in_progress + {row} + MERGED PR did not honor Merged precedence: {stdout}"
+        "{bead_status} + {row} + MERGED PR did not honor Merged precedence: {stdout}"
     );
     assert!(
         !stdout.contains(&format!("stalled: 1 [{bead_id}")),
@@ -1237,17 +1259,22 @@ fn assert_in_progress_merged_row(agent_status: Option<&str>, row: &str) {
 
 #[test]
 fn restart_sweep_reports_absent_in_progress_merged_pr_as_merged() {
-    assert_in_progress_merged_row(None, "absent");
+    assert_merged_row("in_progress", None, "absent");
 }
 
 #[test]
 fn restart_sweep_reports_done_in_progress_merged_pr_as_merged() {
-    assert_in_progress_merged_row(Some("done"), "done");
+    assert_merged_row("in_progress", Some("done"), "done");
 }
 
 #[test]
 fn restart_sweep_reports_working_in_progress_merged_pr_as_merged() {
-    assert_in_progress_merged_row(Some("working"), "working");
+    assert_merged_row("in_progress", Some("working"), "working");
+}
+
+#[test]
+fn sweep_reaps_a_working_closed_lane_after_its_pr_merges() {
+    assert_merged_row("closed", Some("working"), "closed-working");
 }
 
 #[test]
@@ -1305,7 +1332,7 @@ fn a_dirty_blocked_lane_is_left_standing_and_reported() {
     let fake_git = fake_bin.join("git");
     std::fs::write(
         &fake_git,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; elif [ \"$1\" = \"for-each-ref\" ]; then :; else exit 2; fi\n",
     )
     .unwrap();
     for fake_program in [&fake_br, &fake_herdr, &fake_git] {
