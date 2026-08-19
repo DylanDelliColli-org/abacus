@@ -26,10 +26,20 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install Rust
         run: rustup toolchain install "${{ steps.rust-version.outputs.version }}" --profile minimal
+      - name: Install br
+        run: |
+          archive="$RUNNER_TEMP/br-0.3.2-linux_amd64.tar.gz"
+          curl --fail --location --silent --show-error --output "$archive" https://github.com/Dicklesworthstone/beads_rust/releases/download/v0.3.2/br-0.3.2-linux_amd64.tar.gz
+          echo "e67c560e77e912490e44a65e3e9c13205210d171e729c5d801072ee508207288  $RUNNER_TEMP/br-0.3.2-linux_amd64.tar.gz" | sha256sum --check -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" br
+          install -m 0755 "$RUNNER_TEMP/br" "$HOME/.cargo/bin/br"
+          br --version
       - name: Test
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.rust-version.outputs.version }}
-        run: cargo test
+        run: |
+          export BR_REAL="$HOME/.cargo/bin/br"
+          cargo test
 
   clippy:
     runs-on: ubuntu-latest

@@ -188,6 +188,43 @@ fn ci_workflow_uses_the_manifest_toolchain_and_required_commands() {
         workflow.contains("cargo test"),
         "workflow must run the portable test suite"
     );
+
+    let test_job = workflow
+        .split_once("  test:\n")
+        .and_then(|(_, jobs)| jobs.split_once("\n  clippy:"))
+        .map(|(test, _)| test)
+        .expect("workflow must define the test job before clippy");
+    let br_archive = "br-0.3.2-linux_amd64.tar.gz";
+    for install_contract in [
+        "- name: Install br",
+        &format!(
+            "https://github.com/Dicklesworthstone/beads_rust/releases/download/v0.3.2/{br_archive}"
+        ),
+        &format!(
+            "e67c560e77e912490e44a65e3e9c13205210d171e729c5d801072ee508207288  $RUNNER_TEMP/{br_archive}"
+        ),
+        "sha256sum --check -",
+        "install -m 0755 \"$RUNNER_TEMP/br\" \"$HOME/.cargo/bin/br\"",
+        "br --version",
+    ] {
+        assert!(
+            test_job.contains(install_contract),
+            "test job must install checksum-verified br 0.3.2 before running the real-br tests; missing {install_contract:?}"
+        );
+    }
+    assert!(
+        test_job.find("- name: Install br") < test_job.find("- name: Test"),
+        "test job must install br before cargo test"
+    );
+    let br_real_export = "export BR_REAL=\"$HOME/.cargo/bin/br\"";
+    assert!(
+        test_job.contains(br_real_export),
+        "test job must point the shim at the checksum-verified br binary"
+    );
+    assert!(
+        test_job.find(br_real_export) < test_job.find("cargo test"),
+        "test job must export BR_REAL before cargo test"
+    );
     assert!(
         workflow.contains("cargo clippy --all-targets --all-features -- -D warnings"),
         "workflow must deny clippy warnings"
