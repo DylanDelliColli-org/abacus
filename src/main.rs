@@ -10,15 +10,19 @@ use std::process::{Command, exit};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+use abacus::BeadOutcome;
 use abacus::land::{
     Candidate, CompositionResult, DecisionInput, Eligibility, LandDecision, LocalLeg, QueueState,
     ValidationFailure, admission_red_park_body, decide, dequeue_park_body, enumerate_candidates,
     parse_eligibility, parse_enqueue_result, parse_queue_state,
 };
+use abacus::lane::{capture, lane_open, lane_prompt, lane_reap, lane_settle};
+#[cfg(test)]
+use abacus::lane::{retry_never_engaged_once, retry_probe_once};
 use abacus::{
-    BeadOutcome, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
-    is_dirty_worktree_remove_error, parse_bead_outcome, parse_ready, parse_worktree_created,
-    sanitize_agent_name, select_bead, should_reap_lane, version_string,
+    format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
+    version_string,
 };
 
 fn main() {
@@ -673,49 +677,6 @@ fn cmd_merge_jsonl(ours: &Path, base: &Path, theirs: &Path) -> Result<(), String
         .map_err(|e| format!("cannot write ours file {}: {e}", ours.display()))
 }
 
-fn retry_never_engaged_once<Reprompt, Reprobe>(
-    initial_outcome: BeadOutcome,
-    reprompt: Reprompt,
-    reprobe: Reprobe,
-) -> Result<(Option<String>, BeadOutcome), String>
-where
-    Reprompt: FnOnce() -> Result<String, String>,
-    Reprobe: FnOnce() -> Result<BeadOutcome, String>,
-{
-    if initial_outcome != BeadOutcome::NeverEngaged {
-        return Ok((None, initial_outcome));
-    }
-
-    let settled = reprompt()?;
-    let outcome = reprobe()?;
-    Ok((Some(settled), outcome))
-}
-
-fn retry_probe_once<T, Probe, Delay>(mut probe: Probe, delay: Delay) -> Result<T, String>
-where
-    Probe: FnMut() -> Result<T, String>,
-    Delay: FnOnce(),
-{
-    match probe() {
-        Ok(result) => Ok(result),
-        Err(_) => {
-            delay();
-            probe()
-        }
-    }
-}
-
-fn probe_bead_outcome(repo: &Path, bead_id: &str) -> Result<BeadOutcome, String> {
-    let bead_state = retry_probe_once(
-        || capture("br", &["show", bead_id, "--json"], Some(repo)),
-        || {
-            eprintln!("bead outcome probe failed; retrying once after 2 seconds");
-            std::thread::sleep(Duration::from_secs(2));
-        },
-    )?;
-    parse_bead_outcome(&bead_state)
-}
-
 enum DispatchCycle {
     Empty,
     Completed,
@@ -850,113 +811,13 @@ fn dispatch_cycle(
     println!("selected {} — {}", bead.id, bead.title);
 
     let agent_name = sanitize_agent_name(&bead.id);
-    let branch = format!("lane/{}", bead.id);
     let lane_started = Instant::now();
     let lane_result = (|| -> Result<(), String> {
-        let created = capture(
-            "herdr",
-            &[
-                "worktree",
-                "create",
-                "--cwd",
-                repo_str,
-                "--branch",
-                &branch,
-                "--label",
-                &bead.id,
-                "--no-focus",
-            ],
-            None,
-        )?;
-        let lane = parse_worktree_created(&created)?;
-        println!(
-            "lane open: workspace {} pane {} at {}",
-            lane.workspace_id, lane.pane_id, lane.checkout_path
-        );
-
-        capture(
-            "herdr",
-            &[
-                "agent",
-                "start",
-                &agent_name,
-                "--kind",
-                "codex",
-                "--pane",
-                &lane.pane_id,
-            ],
-            None,
-        )?;
-        println!("codex worker started as agent {agent_name}");
-
-        let prompt = dispatch_prompt(&bead.id, &lane.branch, &default_branch);
-        println!(
-            "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
-        );
-        let prompt_args = ["agent", "prompt", &agent_name, &prompt, "--wait"];
-        let settled = match capture("herdr", &prompt_args, None) {
-            Ok(settled) => settled,
-            Err(error) if is_agent_prompt_stalled(&error) => {
-                eprintln!("agent prompt stalled during worker startup; retrying once");
-                capture("herdr", &prompt_args, None)?
-            }
-            Err(error) => return Err(error),
-        };
-        println!("{}", settled.trim_end());
-
-        let initial_outcome = probe_bead_outcome(repo, &bead.id)?;
-        if initial_outcome == BeadOutcome::NeverEngaged {
-            eprintln!("worker never engaged after startup prompt; retrying once");
-        }
-        let (retry_settled, outcome) = retry_never_engaged_once(
-            initial_outcome,
-            || capture("herdr", &prompt_args, None),
-            || probe_bead_outcome(repo, &bead.id),
-        )?;
-        if let Some(retry_settled) = retry_settled {
-            println!("{}", retry_settled.trim_end());
-        }
-        if should_reap_lane(outcome) {
-            let remove_args = ["worktree", "remove", "--workspace", &lane.workspace_id];
-            match capture("herdr", &remove_args, None) {
-                Ok(_) => {}
-                Err(error) if is_dirty_worktree_remove_error(&error) => {
-                    eprintln!(
-                        "WARNING: completed lane left uncommitted changes in workspace {}; \
-                         forcing removal. This is a protocol violation worth investigating.",
-                        lane.workspace_id
-                    );
-                    capture(
-                        "herdr",
-                        &[
-                            "worktree",
-                            "remove",
-                            "--workspace",
-                            &lane.workspace_id,
-                            "--force",
-                        ],
-                        None,
-                    )?;
-                }
-                Err(error) => return Err(error),
-            }
-            println!("lane reaped: workspace {}", lane.workspace_id);
-        }
-
-        match outcome {
-            BeadOutcome::Completed => {
-                let duration = format_lane_duration(lane_started.elapsed().as_secs());
-                println!("bead {} is closed; worker completed in {duration}", bead.id);
-                Ok(())
-            }
-            BeadOutcome::Incomplete => Err(format!(
-                "bead {} is in_progress; worker engaged but the run is incomplete",
-                bead.id
-            )),
-            BeadOutcome::NeverEngaged => {
-                Err(format!("bead {} is open; worker never engaged", bead.id))
-            }
-        }
+        let lane = lane_open(repo_str, bead, &agent_name)?;
+        let prompt = lane_prompt(bead, &lane, &default_branch, &agent_name)?;
+        lane_settle(repo, bead, lane_started, &prompt, |outcome| {
+            lane_reap(outcome, &lane)
+        })
     })();
 
     lane_result.map_err(|error| {
@@ -964,29 +825,6 @@ fn dispatch_cycle(
         format!("{error} after {duration}")
     })?;
     Ok(DispatchCycle::Completed)
-}
-
-/// Run a command, capture stdout; a non-zero exit becomes an error carrying
-/// the command line and stderr, because the substrate CLI's own message is
-/// the diagnosis.
-fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let out = cmd
-        .output()
-        .map_err(|e| format!("failed to spawn {program}: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "`{program} {}` failed ({}): {}",
-            args.join(" "),
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run a command and capture its exit code, stdout, and stderr without

@@ -1,8 +1,8 @@
-//! Core logic for `abacus run`: parse the substrate CLIs' JSON output and
-//! compose the dispatch prompt. All process spawning lives in `main.rs`;
-//! everything here is pure so it can be tested against captured fixtures.
+//! Core logic for `abacus`: parse substrate CLI output, compose dispatch
+//! prompts, and run the named lane-lifecycle phases.
 
 pub mod land;
+pub mod lane;
 
 use serde::Deserialize;
 
