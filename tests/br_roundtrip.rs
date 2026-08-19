@@ -1095,6 +1095,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
@@ -1648,6 +1649,7 @@ fn abacus_run_stops_after_a_second_never_engaged_outcome() {
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
@@ -1822,6 +1824,7 @@ fn abacus_run_classifies_a_superseded_blocked_comment_as_stalled() {
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
