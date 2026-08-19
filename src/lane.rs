@@ -9,6 +9,9 @@ use crate::{
     is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created, should_reap_lane,
 };
 
+// ADR 0005 D8 moves every deployed grammar into the review module when it lands.
+pub(crate) const BLOCKED_COMMENT_TOKEN: &str = "BLOCKED";
+
 /// Everything needed to repeat a prompt after a worker never engages.
 pub struct LanePrompt {
     agent_name: String,
@@ -125,6 +128,10 @@ where
         }
         BeadOutcome::Incomplete => Err(format!(
             "bead {} is in_progress; worker engaged but the run is incomplete",
+            bead.id
+        )),
+        BeadOutcome::Blocked => Err(format!(
+            "bead {} is in_progress; worker reported BLOCKED",
             bead.id
         )),
         BeadOutcome::NeverEngaged => Err(format!("bead {} is open; worker never engaged", bead.id)),

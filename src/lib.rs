@@ -82,6 +82,7 @@ pub fn sanitize_agent_name(bead_id: &str) -> String {
 pub enum BeadOutcome {
     Completed,
     Incomplete,
+    Blocked,
     NeverEngaged,
 }
 
@@ -119,6 +120,24 @@ pub fn is_dirty_worktree_remove_error(error: &str) -> bool {
 #[derive(Deserialize)]
 struct BeadState {
     status: String,
+    #[serde(default)]
+    comments: Vec<BeadComment>,
+}
+
+#[derive(Deserialize)]
+struct BeadComment {
+    id: i64,
+    text: String,
+}
+
+fn has_blocked_leading_token(text: &str) -> bool {
+    let Some(remainder) = text.strip_prefix(lane::BLOCKED_COMMENT_TOKEN) else {
+        return false;
+    };
+    remainder
+        .chars()
+        .next()
+        .is_none_or(|boundary| !boundary.is_alphanumeric() && boundary != '_')
 }
 
 /// Parse the one-record array emitted by `br show <id> --json` and classify
@@ -132,7 +151,17 @@ pub fn parse_bead_outcome(json: &str) -> Result<BeadOutcome, String> {
             beads.len()
         ));
     };
-    classify_bead_status(&bead.status)
+    if bead.status == "in_progress"
+        && bead
+            .comments
+            .iter()
+            .max_by_key(|comment| comment.id)
+            .is_some_and(|comment| has_blocked_leading_token(&comment.text))
+    {
+        Ok(BeadOutcome::Blocked)
+    } else {
+        classify_bead_status(&bead.status)
+    }
 }
 
 /// The lane a `herdr worktree create` call opened.
@@ -397,12 +426,100 @@ mod tests {
             classify_bead_status("open").unwrap(),
             BeadOutcome::NeverEngaged
         );
+        assert_eq!(
+            parse_bead_outcome(r#"[{"status":"closed","comments":[]}]"#).unwrap(),
+            BeadOutcome::Completed
+        );
+        assert_eq!(
+            parse_bead_outcome(r#"[{"status":"in_progress","comments":[]}]"#).unwrap(),
+            BeadOutcome::Incomplete
+        );
+        assert_eq!(
+            parse_bead_outcome(r#"[{"status":"open","comments":[]}]"#).unwrap(),
+            BeadOutcome::NeverEngaged
+        );
+        assert_eq!(
+            parse_bead_outcome(
+                r#"[{"status":"in_progress","comments":[{"id":1,"text":"BLOCKED: waiting"}]}]"#
+            )
+            .unwrap(),
+            BeadOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn blocked_is_in_progress_with_a_blocked_leading_highest_id_comment() {
+        let fixture = r#"[{"status":"in_progress","comments":[
+            {"id":1,"issue_id":"ab-example","author":"worker","text":"starting","created_at":"2026-08-19T12:00:00Z"},
+            {"id":2,"issue_id":"ab-example","author":"worker","text":"BLOCKED: cannot reach origin","created_at":"2026-08-19T12:00:00Z"}
+        ]}]"#;
+
+        assert_eq!(parse_bead_outcome(fixture).unwrap(), BeadOutcome::Blocked);
+    }
+
+    #[test]
+    fn a_newer_non_blocked_comment_supersedes_an_older_blocked_one() {
+        let ordered = r#"[{"status":"in_progress","comments":[
+            {"id":1,"issue_id":"ab-example","author":"worker","text":"BLOCKED: waiting","created_at":"2026-08-19T12:00:00Z"},
+            {"id":2,"issue_id":"ab-example","author":"worker","text":"unblocked, resuming","created_at":"2026-08-19T12:00:00Z"}
+        ]}]"#;
+        let reversed = r#"[{"status":"in_progress","comments":[
+            {"id":2,"issue_id":"ab-example","author":"worker","text":"unblocked, resuming","created_at":"2026-08-19T12:00:00Z"},
+            {"id":1,"issue_id":"ab-example","author":"worker","text":"BLOCKED: waiting","created_at":"2026-08-19T12:00:00Z"}
+        ]}]"#;
+
+        assert_eq!(
+            parse_bead_outcome(ordered).unwrap(),
+            BeadOutcome::Incomplete
+        );
+        assert_eq!(
+            parse_bead_outcome(reversed).unwrap(),
+            BeadOutcome::Incomplete
+        );
+    }
+
+    #[test]
+    fn comments_field_absent_or_empty_is_plain_incomplete() {
+        assert_eq!(
+            parse_bead_outcome(r#"[{"status":"in_progress"}]"#).unwrap(),
+            BeadOutcome::Incomplete
+        );
+        assert_eq!(
+            parse_bead_outcome(r#"[{"status":"in_progress","comments":[]}]"#).unwrap(),
+            BeadOutcome::Incomplete
+        );
+    }
+
+    #[test]
+    fn blocked_token_is_case_sensitive_and_boundary_checked() {
+        for (text, expected) in [
+            ("BLOCKED: cannot reach origin", BeadOutcome::Blocked),
+            ("BLOCKED — cannot reach origin", BeadOutcome::Blocked),
+            ("Blocked: cannot reach origin", BeadOutcome::Incomplete),
+            ("UNBLOCKED: origin reachable", BeadOutcome::Incomplete),
+        ] {
+            let fixture = format!(
+                r#"[{{"status":"in_progress","comments":[{{"id":1,"issue_id":"ab-example","author":"worker","text":{text:?},"created_at":"2026-08-19T12:00:00Z"}}]}}]"#
+            );
+
+            assert_eq!(parse_bead_outcome(&fixture).unwrap(), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_closed_bead_with_a_blocked_comment_is_completed() {
+        let fixture = r#"[{"status":"closed","comments":[
+            {"id":1,"issue_id":"ab-example","author":"worker","text":"BLOCKED: cannot reach origin","created_at":"2026-08-19T12:00:00Z"}
+        ]}]"#;
+
+        assert_eq!(parse_bead_outcome(fixture).unwrap(), BeadOutcome::Completed);
     }
 
     #[test]
     fn only_a_completed_outcome_reaps_the_lane() {
         assert!(should_reap_lane(BeadOutcome::Completed));
         assert!(!should_reap_lane(BeadOutcome::Incomplete));
+        assert!(!should_reap_lane(BeadOutcome::Blocked));
         assert!(!should_reap_lane(BeadOutcome::NeverEngaged));
     }
 
