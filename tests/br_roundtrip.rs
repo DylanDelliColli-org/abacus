@@ -203,6 +203,19 @@ fn install_no_pr_gh_stub(fake_bin: &Path) {
     std::fs::set_permissions(fake_gh, permissions).unwrap();
 }
 
+#[cfg(unix)]
+fn install_empty_herdr_stub(fake_bin: &Path) {
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        "#!/bin/sh\nif [ \"$1 $2\" = \"agent list\" ]; then\n  printf '%s\\n' '{\"result\":{\"agents\":[]}}'\nelse\n  printf 'unexpected herdr call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(fake_herdr, permissions).unwrap();
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
@@ -257,6 +270,66 @@ macro_rules! require_br {
             return;
         }
     };
+}
+
+#[cfg(unix)]
+#[test]
+fn drain_enumerates_a_closed_bead_from_its_local_lane_branch() {
+    require_br!();
+    let ws = TempWorkspace::new("closed-lane-candidate");
+    git(
+        &ws.0,
+        &[
+            "-c",
+            "user.name=Abacus Integration Test",
+            "-c",
+            "user.email=abacus@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed lane candidate",
+        ],
+    );
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(&ws.0, &["create", "--title=closed lane candidate"]);
+    let ready = br(&ws.0, &["ready", "--json"]);
+    let ready = parse_ready(&ready).unwrap();
+    let bead = select_bead(&ready).unwrap();
+    let bead_id = bead.id.clone();
+    br(&ws.0, &["update", &bead_id, "--claim"]);
+    br(&ws.0, &["close", &bead_id]);
+    git(&ws.0, &["branch", &format!("lane/{bead_id}")]);
+
+    let listed = br(&ws.0, &["list", "--json"]);
+    assert!(
+        !listed.contains(&bead_id),
+        "real br must omit the closed fixture from its default list: {listed}"
+    );
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    install_empty_herdr_stub(&fake_bin);
+    install_no_pr_gh_stub(&fake_bin);
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("completed: 1 [{bead_id}")),
+        "the closed bead was not recovered from its local lane branch: {stdout}"
+    );
 }
 
 #[test]
