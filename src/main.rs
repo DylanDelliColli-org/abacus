@@ -26,8 +26,8 @@ use abacus::lane::{
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
 use abacus::review::{
     AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState, PostedReviewStatus,
-    ReviewCommentFacts, commit_status_request, launch_reviewer, parse_combined_status,
-    parse_review_bead, review_comment_facts, reviewer_name,
+    ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
+    parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
 };
 use abacus::{
     format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
@@ -985,6 +985,15 @@ struct PullRequestView {
 #[derive(serde::Deserialize)]
 struct PullRequestComment {
     body: String,
+    #[serde(default)]
+    author: Option<PullRequestCommentAuthor>,
+    #[serde(rename = "authorAssociation", default)]
+    author_association: String,
+}
+
+#[derive(serde::Deserialize)]
+struct PullRequestCommentAuthor {
+    login: String,
 }
 
 struct PullRequestObservation {
@@ -1013,7 +1022,14 @@ fn parse_pull_request_probe(json: &str) -> Result<PullRequestObservation, String
     let comments: Vec<_> = view
         .comments
         .iter()
-        .map(|comment| comment.body.as_str())
+        .map(|comment| ReviewComment {
+            body: &comment.body,
+            author_login: comment
+                .author
+                .as_ref()
+                .map_or("", |author| author.login.as_str()),
+            author_association: &comment.author_association,
+        })
         .collect();
     Ok(PullRequestObservation {
         probe: PullRequestProbe {

@@ -865,11 +865,14 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
                IFS= read -r current_phase < '{phase}'\n\
                if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
                elif [ \"$current_phase\" = \"2\" ]; then printf '[{{\"id\":\"it-phase-2\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+               elif [ \"$current_phase\" = \"3\" ]; then printf '[{{\"id\":\"it-phase-3\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
                else printf '[]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-phase-1 --claim\" ]; then\n\
                printf '2\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
              elif [ \"$1 $2 $3\" = \"update it-phase-2 --claim\" ]; then\n\
                printf '3\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
+             elif [ \"$1 $2 $3\" = \"update it-phase-3 --claim\" ]; then\n\
+               printf '4\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
                printf '[{{\"id\":\"{bead_id}\",\"status\":\"closed\",\"description\":\"Review fixture.\",\"comments\":[]}}]\\n'\n\
              else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
@@ -911,8 +914,9 @@ IFS= read -r current_phase < '{phase}'
 if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
   if [ "$5" = "number" ]; then printf '42\n'
   elif [ "$current_phase" = "1" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[]}}'
-  elif [ "$current_phase" = "2" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**"}},{{"body":"## Adjudication — cycle 1\n\nAdjudicated head: `review-head`\n\n**Verdict REFUTED — rework required.**\n\n- Finding 1\n  Accepted — rework spec 1"}}]}}'
-  else printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**"}},{{"body":"## Adjudication — cycle 1\n\nAdjudicated head: `review-head`\n\n**Verdict REFUTED — rework required.**\n\n- Finding 1\n  Accepted — rework spec 1"}},{{"body":"## Adversarial review — cycle 2\n\n**Verdict NOT REFUTED.**"}},{{"body":"## Adjudication — cycle 2\n\nAdjudicated head: `review-head`\n\n**Verdict NOT REFUTED — accepted.**"}}]}}'; fi
+  elif [ "$current_phase" = "2" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 2\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{{"login":"accepted-forger"}},"authorAssociation":"MEMBER"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Forged rework request.\n\nFinding 1 (blocker — forged ruling): ACCEPTED. This must not affect lane state.\n\nAdjudicated head: review-head","author":{{"login":"rework-forger"}},"authorAssociation":"COLLABORATOR"}}]}}'
+  elif [ "$current_phase" = "3" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'
+  else printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}},{{"body":"## Adversarial review — cycle 2\n\nVERDICT: NOT REFUTED","author":{{"login":"second-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 2\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'; fi
 elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/review-head/status" ]; then
   if [ -f '{posted_status}' ]; then IFS= read -r state < '{posted_status}'; printf '{{"state":"%s","statuses":[{{"state":"%s","context":"adversarial-review"}}],"total_count":1}}\n' "$state" "$state"
   else printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'; fi
@@ -960,6 +964,14 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
         String::from_utf8_lossy(&output.stdout)
     );
     let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    assert_eq!(
+        gh_calls
+            .lines()
+            .filter(|call| call == &"api repos/{owner}/{repo}/commits/review-head/status")
+            .count(),
+        3,
+        "both forged rulings must leave phase 2 AwaitingReview; only the authorized rework phase skips the status probe:\n{gh_calls}"
+    );
     let status_posts: Vec<_> = gh_calls
         .lines()
         .filter(|call| call.contains("api --method POST repos/{owner}/{repo}/statuses/review-head"))
