@@ -190,6 +190,19 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> &str {
         .expect("panic must carry a string message")
 }
 
+#[cfg(unix)]
+fn install_no_pr_gh_stub(fake_bin: &Path) {
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(fake_gh, permissions).unwrap();
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
@@ -549,6 +562,7 @@ fn abacus_drain_dispatches_every_ready_bead_then_exits_zero() {
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
     let fake_herdr = fake_bin.join("herdr");
+    let fake_gh = fake_bin.join("gh");
     let herdr_calls = ws.0.join("herdr-calls");
     let current_bead = ws.0.join("current-bead");
     std::fs::write(
@@ -581,9 +595,17 @@ fn abacus_drain_dispatches_every_ready_bead_then_exits_zero() {
         ),
     )
     .unwrap();
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    let mut permissions = std::fs::metadata(&fake_gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_gh, permissions).unwrap();
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
@@ -705,6 +727,7 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -822,6 +845,7 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -928,6 +952,7 @@ fn abacus_run_discovers_the_remote_default_without_a_local_origin_head() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -1070,6 +1095,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
@@ -1081,7 +1107,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("in_progress"), "stderr: {stderr}");
     assert!(
@@ -1141,7 +1167,7 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
     std::fs::write(
         &fake_gh,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
             gh_calls.display()
         ),
     )
@@ -1180,8 +1206,11 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
     );
     assert_eq!(
         std::fs::read_to_string(gh_calls).unwrap(),
-        "",
-        "the default run path must never invoke gh"
+        format!(
+            "pr view lane/{} --json state,mergedAt,headRefOid\n",
+            bead.id
+        ),
+        "run must prove the completed lane has no PR before reaping"
     );
 }
 
@@ -1199,6 +1228,7 @@ fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -1302,6 +1332,7 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
     let lane_json = serde_json::json!({
@@ -1382,6 +1413,7 @@ fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engag
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_br = fake_bin.join("br");
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
@@ -1499,6 +1531,7 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
     let lane_json = serde_json::json!({
@@ -1616,6 +1649,7 @@ fn abacus_run_stops_after_a_second_never_engaged_outcome() {
     let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
 
     let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
         &std::env::var_os("PATH").expect("test PATH must be set"),
@@ -1627,12 +1661,188 @@ fn abacus_run_stops_after_a_second_never_engaged_outcome() {
         .output()
         .unwrap();
 
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("never engaged"), "stderr: {stderr}");
     assert_eq!(
         std::fs::read_to_string(prompt_attempts).unwrap(),
         "attempt\nattempt\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
+    require_br!();
+    let ws = TempWorkspace::new("real-blocked-drain");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let first = br(
+        &ws.0,
+        &[
+            "create",
+            "--title=first worker blocks",
+            "--priority=0",
+            "--silent",
+        ],
+    )
+    .trim()
+    .to_owned();
+    let second = br(
+        &ws.0,
+        &[
+            "create",
+            "--title=second worker completes",
+            "--priority=1",
+            "--silent",
+        ],
+    )
+    .trim()
+    .to_owned();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let fake_gh = fake_bin.join("gh");
+    let current_bead = ws.0.join("current-bead");
+    let herdr_calls = ws.0.join("herdr-calls");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               shift 2\n\
+               while [ \"$#\" -gt 0 ]; do\n\
+                 if [ \"$1\" = \"--label\" ]; then bead_id=$2; break; fi\n\
+                 shift\n\
+               done\n\
+               printf '%s\\n' \"$bead_id\" > '{current_bead}'\n\
+               printf '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"workspace-%s\"}},\"root_pane\":{{\"pane_id\":\"pane-%s\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/%s\"}}}}}}\\n' \"$bead_id\" \"$bead_id\" \"$bead_id\"\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               IFS= read -r bead_id < '{current_bead}'\n\
+               cd '{root}'\n\
+               if [ \"$bead_id\" = \"{first}\" ]; then\n\
+                 br comments add \"$bead_id\" 'BLOCKED: fixture reason'\n\
+               else\n\
+                 br close \"$bead_id\"\n\
+               fi\n\
+             fi\n",
+            calls = herdr_calls.display(),
+            current_bead = current_bead.display(),
+            root = ws.0.display(),
+            first = first,
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    for fake_program in [&fake_herdr, &fake_gh] {
+        let mut permissions = std::fs::metadata(fake_program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(fake_program, permissions).unwrap();
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let first_state = br(&ws.0, &["show", &first, "--json"]);
+    assert_eq!(
+        parse_bead_outcome(&first_state).unwrap(),
+        BeadOutcome::Blocked
+    );
+    assert!(
+        first_state.contains("BLOCKED: fixture reason"),
+        "blocked comment was not durable: {first_state}"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &second, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+    assert!(stdout.contains(&format!("blocked: 1 [{first}")));
+    assert!(stdout.contains(&format!("completed: 1 [{second}")));
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_run_classifies_a_superseded_blocked_comment_as_stalled() {
+    require_br!();
+    let ws = TempWorkspace::new("real-superseded-blocked");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let bead_id = br(
+        &ws.0,
+        &["create", "--title=superseded blocked worker", "--silent"],
+    )
+    .trim()
+    .to_owned();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let fake_herdr = fake_bin.join("herdr");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "stalled-workspace" },
+            "root_pane": { "pane_id": "stalled-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{bead_id}")
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{lane_json}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               cd '{root}'\n\
+               br comments add '{bead_id}' 'BLOCKED: temporary fixture'\n\
+               br comments add '{bead_id}' 'resuming'\n\
+             fi\n",
+            lane_json = lane_json,
+            root = ws.0.display(),
+            bead_id = bead_id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("stalled"), "stderr: {stderr}");
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &bead_id, "--json"])).unwrap(),
+        BeadOutcome::Incomplete,
+        "the later real-br comment must supersede BLOCKED"
     );
 }
 
