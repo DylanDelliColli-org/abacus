@@ -5,8 +5,8 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Command, Output};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -57,17 +57,137 @@ impl Drop for TempWorkspace {
 }
 
 fn br(dir: &PathBuf, args: &[&str]) -> String {
-    let out = Command::new("br")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("br must be on PATH");
-    assert!(
-        out.status.success(),
-        "br {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
+    let out = br_with_retry(
+        args,
+        || {
+            Command::new("br")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("br must be on PATH")
+        },
+        std::thread::sleep,
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn br_with_retry<Run, Delay>(args: &[&str], mut run: Run, delay: Delay) -> Output
+where
+    Run: FnMut() -> Output,
+    Delay: FnOnce(Duration),
+{
+    const TIMESTAMP_RACE: &str = "updated_at: cannot be before created_at";
+
+    let first = run();
+    if first.status.success() {
+        return first;
+    }
+
+    if String::from_utf8_lossy(&first.stderr).contains(TIMESTAMP_RACE) {
+        delay(Duration::from_millis(100));
+        let retry = run();
+        assert!(
+            retry.status.success(),
+            "br {args:?} failed (retried once): {}",
+            String::from_utf8_lossy(&retry.stderr)
+        );
+        return retry;
+    }
+
+    assert!(
+        first.status.success(),
+        "br {args:?} failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    first
+}
+
+#[test]
+fn br_helper_retries_the_timestamp_race_once_after_100_milliseconds() {
+    let attempts = std::cell::Cell::new(0);
+    let observed_delay = std::cell::Cell::new(None);
+
+    let output = br_with_retry(
+        &["create", "--title=test"],
+        || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                shell_output("printf '%s' 'updated_at: cannot be before created_at' >&2; exit 1")
+            } else {
+                shell_output("printf '%s' retried-output")
+            }
+        },
+        |delay| observed_delay.set(Some(delay)),
+    );
+
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(observed_delay.get(), Some(Duration::from_millis(100)));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "retried-output");
+}
+
+#[test]
+fn br_helper_does_not_retry_a_different_failure() {
+    let attempts = std::cell::Cell::new(0);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        br_with_retry(
+            &["create", "--title=test"],
+            || {
+                attempts.set(attempts.get() + 1);
+                shell_output("printf '%s' 'updated_at cannot be before created_at' >&2; exit 1")
+            },
+            |_| panic!("a non-matching failure must not be delayed or retried"),
+        );
+    }))
+    .expect_err("the original br failure must panic");
+
+    assert_eq!(attempts.get(), 1);
+    let message = panic_message(&panic);
+    assert!(message.contains("br [\"create\", \"--title=test\"] failed:"));
+    assert!(!message.contains("retried once"));
+}
+
+#[test]
+fn br_helper_marks_a_failed_retry_loudly() {
+    let attempts = std::cell::Cell::new(0);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        br_with_retry(
+            &["create", "--title=test"],
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    shell_output(
+                        "printf '%s' 'updated_at: cannot be before created_at' >&2; exit 1",
+                    )
+                } else {
+                    shell_output("printf '%s' 'second br failure' >&2; exit 1")
+                }
+            },
+            |_| {},
+        );
+    }))
+    .expect_err("a failed retry must panic");
+
+    assert_eq!(attempts.get(), 2);
+    let message = panic_message(&panic);
+    assert!(message.contains("retried once"));
+    assert!(message.contains("second br failure"));
+}
+
+fn shell_output(script: &str) -> std::process::Output {
+    Command::new("sh")
+        .args(["-c", script])
+        .output()
+        .expect("sh must be available to exercise the br helper")
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> &str {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic must carry a string message")
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
