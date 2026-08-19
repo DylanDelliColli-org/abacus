@@ -828,6 +828,14 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
 #[test]
 fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
     let ws = TempWorkspace::new("default-branch-prompt");
+    let target_msrv = "1.82";
+    std::fs::write(
+        ws.0.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"target-fixture\"\nversion = \"0.0.0\"\nrust-version = \"{target_msrv}\"\n"
+        ),
+    )
+    .unwrap();
     git(
         &ws.0,
         &[
@@ -899,8 +907,11 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
     assert!(
         calls
             .lines()
-            .any(|call| call.contains("gh pr create --base develop")),
-        "worker prompt did not use the discovered default branch:\n{calls}"
+            .any(|call| call.contains("gh pr create --base develop")
+                && call.contains(&format!(
+                    "RUSTUP_TOOLCHAIN={target_msrv} cargo clippy --all-targets --all-features -- -D warnings"
+                ))),
+        "worker prompt did not use the discovered default branch and target MSRV:\n{calls}"
     );
 }
 
@@ -1893,7 +1904,7 @@ fn dispatch_protocol_pushes_opens_pr_then_closes_without_lane_tracker_changes() 
     let json = br(&tracker, &["ready", "--json"]);
     let beads = parse_ready(&json).unwrap();
     let bead_id = &beads[0].id;
-    let prompt = dispatch_prompt(bead_id, "lane/it-work", "main");
+    let prompt = dispatch_prompt(bead_id, "lane/it-work", "main", None);
     let close = prompt.find(&format!("br close {bead_id}")).unwrap();
     let commit = prompt.find("commit all work").unwrap();
     let push = prompt.find("git push -u origin lane/it-work").unwrap();
