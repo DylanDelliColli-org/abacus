@@ -69,6 +69,13 @@ BEADS_DIR=<main-checkout>/.beads br <arguments>
 Do not rely on an exported `BEADS_DIR`: worker shell invocations do not share
 environment changes.
 
+Four `br doctor` WARNs on this store are known-benign — do not jot them, only
+new findings: `br_path_dupes` (the shim above is deliberate),
+`db.recovery_artifacts` (doctor's own aged check governs escalation),
+`base_jsonl` stale merge anchor (the next `br sync --flush-only` refreshes
+it), and `dep.dead_closed_blocking_edges` (satisfied-history edges; nothing
+is blocked).
+
 ## Lanes
 
 - A worker lane is a git worktree under `~/.herdr/worktrees/abacus/` on a
@@ -81,6 +88,11 @@ environment changes.
   validated PRs into the repository's merge queue, which performs the merge
   ([ADR 0003](docs/adr/0003-pr-validation-and-auto-merge.md)). Without land
   mode, the operator reviews at the merge boundary.
+- **Pass Markdown to `gh` by file, never inline.** Use `gh pr comment <n>
+  --body-file <path>` (and `--body-file` wherever a body is accepted): a
+  double-quoted `--body` string goes through the shell first, and backtick
+  code spans execute as command substitution before `gh` runs (observed
+  2026-08-19: a rework-brief body executed embedded command text).
 - **Read-only review dispatches** (bloat review, spec validation) must state
   in the prompt that the review is not bead-tracked work — no beads, no
   branches, no commits. A reviewer that follows the prime directive without
