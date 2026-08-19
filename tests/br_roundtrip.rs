@@ -1218,7 +1218,7 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
     assert_eq!(
         std::fs::read_to_string(gh_calls).unwrap(),
         format!(
-            "pr view lane/{} --json state,mergedAt,headRefOid\n",
+            "pr view lane/{} --json state,mergedAt,headRefOid,number,comments\n",
             bead.id
         ),
         "run must prove the completed lane has no PR before reaping"

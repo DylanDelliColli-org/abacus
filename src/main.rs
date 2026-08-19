@@ -24,7 +24,11 @@ use abacus::lane::{
 };
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
-use abacus::review::{BLOCKED_COMMENT_TOKEN, launch_reviewer, parse_review_bead};
+use abacus::review::{
+    Adjudication, AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState,
+    PostedReviewStatus, ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
+    parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
+};
 use abacus::{
     format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
     version_string,
@@ -714,8 +718,16 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
             Ok(0)
         }
         DispatchCycle::Settled(settled) => {
-            let state = derive_settled_lane_state(&repo, &settled, false)?;
-            match state {
+            let observation = derive_settled_lane_state(&repo, &settled, false)?;
+            let mut launched_reviewers = BTreeSet::new();
+            reconcile_review_lifecycle(
+                &repo,
+                &settled,
+                &observation,
+                &[],
+                &mut launched_reviewers,
+            )?;
+            match observation.state {
                 None => {
                     lane_reap(settled.outcome, &settled.lane)?;
                     println!(
@@ -726,7 +738,6 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     Ok(0)
                 }
                 Some(LaneState::AwaitingReview) => {
-                    launch_awaiting_reviewer(&repo, &settled, 1)?;
                     println!(
                         "bead {} lane is awaiting-review after {}; leaving it warm",
                         settled.bead_id,
@@ -768,7 +779,7 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     }
                     Ok(3)
                 }
-                Some(LaneState::Authoring | LaneState::ReworkRequested) => {
+                Some(state @ (LaneState::Authoring | LaneState::ReworkRequested)) => {
                     eprintln!(
                         "bead {} settled into parked lane state {state:?} after {}",
                         settled.bead_id,
@@ -788,6 +799,7 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
     let mut lost_claims = BTreeSet::new();
     let mut report = MorningReport::default();
     let mut reported_states = BTreeSet::new();
+    let mut launched_reviewers = BTreeSet::new();
     // Invocation-local only: restart must re-derive durable lane facts.
     // Within a run, Merged and closed/no-PR results are terminal; live lanes
     // stay eligible so a later sweep can observe their transitions.
@@ -799,6 +811,7 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
             &mut report,
             &mut reported_states,
             &mut absorbed_terminal_beads,
+            &mut launched_reviewers,
         )? {
             std::thread::sleep(Duration::from_secs(2));
             continue;
@@ -813,7 +826,15 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
                 return Ok(());
             }
             DispatchCycle::Settled(settled) => {
-                record_drain_settle(&repo, settled, false, &mut report, &mut reported_states)?;
+                record_drain_settle(
+                    &repo,
+                    settled,
+                    false,
+                    &[],
+                    &mut launched_reviewers,
+                    &mut report,
+                    &mut reported_states,
+                )?;
             }
             DispatchCycle::ClaimLost(bead_id) => {
                 lost_claims.insert(bead_id);
@@ -887,6 +908,7 @@ fn sweep_live_lanes(
     report: &mut MorningReport,
     reported_states: &mut BTreeSet<(String, String)>,
     absorbed_terminal_beads: &mut BTreeSet<String>,
+    launched_reviewers: &mut BTreeSet<(String, u32)>,
 ) -> Result<bool, String> {
     let agents = parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?;
     let agents: Vec<_> = agents
@@ -934,6 +956,8 @@ fn sweep_live_lanes(
                 elapsed_secs: 0,
             },
             worker_active,
+            &agents,
+            launched_reviewers,
             report,
             reported_states,
         )?;
@@ -952,9 +976,38 @@ struct PullRequestView {
     merged_at: Option<String>,
     #[serde(rename = "headRefOid", default)]
     head_ref_oid: Option<String>,
+    #[serde(default)]
+    number: Option<u64>,
+    #[serde(default)]
+    comments: Vec<PullRequestComment>,
 }
 
-fn parse_pull_request_probe(json: &str) -> Result<PullRequestProbe, String> {
+#[derive(serde::Deserialize)]
+struct PullRequestComment {
+    body: String,
+    #[serde(default)]
+    author: Option<PullRequestCommentAuthor>,
+    #[serde(rename = "authorAssociation", default)]
+    author_association: String,
+}
+
+#[derive(serde::Deserialize)]
+struct PullRequestCommentAuthor {
+    login: String,
+}
+
+struct PullRequestObservation {
+    probe: PullRequestProbe,
+    number: Option<u64>,
+    review_facts: ReviewCommentFacts,
+}
+
+struct SettledLaneObservation {
+    state: Option<LaneState>,
+    pull_request: Option<PullRequestObservation>,
+}
+
+fn parse_pull_request_probe(json: &str) -> Result<PullRequestObservation, String> {
     let view: PullRequestView = serde_json::from_str(json)
         .map_err(|error| format!("unparseable `gh pr view` output: {error}"))?;
     let state = if view.merged_at.is_some() || view.state == "MERGED" {
@@ -966,9 +1019,25 @@ fn parse_pull_request_probe(json: &str) -> Result<PullRequestProbe, String> {
             other => return Err(format!("unsupported pull request state {other:?}")),
         }
     };
-    Ok(PullRequestProbe {
-        state,
-        head_sha: view.head_ref_oid,
+    let comments: Vec<_> = view
+        .comments
+        .iter()
+        .map(|comment| ReviewComment {
+            body: &comment.body,
+            author_login: comment
+                .author
+                .as_ref()
+                .map_or("", |author| author.login.as_str()),
+            author_association: &comment.author_association,
+        })
+        .collect();
+    Ok(PullRequestObservation {
+        probe: PullRequestProbe {
+            state,
+            head_sha: view.head_ref_oid,
+        },
+        number: view.number,
+        review_facts: review_comment_facts(&comments)?,
     })
 }
 
@@ -982,10 +1051,16 @@ fn is_no_pull_request_error(stderr: &str) -> bool {
         )
 }
 
-fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestProbe>, String> {
+fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestObservation>, String> {
     let (code, stdout, stderr) = capture_status(
         "gh",
-        &["pr", "view", branch, "--json", "state,mergedAt,headRefOid"],
+        &[
+            "pr",
+            "view",
+            branch,
+            "--json",
+            "state,mergedAt,headRefOid,number,comments",
+        ],
         Some(repo),
     )?;
     if code == 0 {
@@ -994,7 +1069,7 @@ fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestPro
         Ok(None)
     } else {
         Err(format!(
-            "`gh pr view {branch} --json state,mergedAt,headRefOid` failed ({code}): {}",
+            "`gh pr view {branch} --json state,mergedAt,headRefOid,number,comments` failed ({code}): {}",
             stderr.trim()
         ))
     }
@@ -1004,10 +1079,14 @@ fn record_drain_settle(
     repo: &Path,
     settled: SettledLane,
     worker_active: bool,
+    agents: &[AgentView],
+    launched_reviewers: &mut BTreeSet<(String, u32)>,
     report: &mut MorningReport,
     reported_states: &mut BTreeSet<(String, String)>,
 ) -> Result<Option<LaneState>, String> {
-    let state = derive_settled_lane_state(repo, &settled, worker_active)?;
+    let observation = derive_settled_lane_state(repo, &settled, worker_active)?;
+    reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
+    let state = observation.state;
     if state.is_none() {
         let key = (settled.bead_id.clone(), "completed".to_owned());
         if reported_states.insert(key) {
@@ -1037,9 +1116,7 @@ fn record_drain_settle(
                 lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
             }
         }
-        LaneState::AwaitingReview => {
-            launch_awaiting_reviewer(repo, &settled, 1)?;
-        }
+        LaneState::AwaitingReview => {}
         LaneState::Authoring | LaneState::ReworkRequested | LaneState::Stalled => {}
     }
     report.record_state(state, &settled.bead_id, settled.elapsed_secs);
@@ -1060,10 +1137,18 @@ fn probe_pull_request_number(repo: &Path, branch: &str) -> Result<u64, String> {
     })
 }
 
-fn launch_awaiting_reviewer(repo: &Path, settled: &SettledLane, cycle: u32) -> Result<(), String> {
+fn launch_awaiting_reviewer(
+    repo: &Path,
+    settled: &SettledLane,
+    pr_number: Option<u64>,
+    cycle: u32,
+) -> Result<(), String> {
     let bead_json = capture("br", &["show", &settled.bead_id, "--json"], Some(repo))?;
     let review_bead = parse_review_bead(&bead_json)?;
-    let pr_number = probe_pull_request_number(repo, &settled.lane.branch)?;
+    let pr_number = match pr_number {
+        Some(number) => number,
+        None => probe_pull_request_number(repo, &settled.lane.branch)?,
+    };
     let brief = launch_reviewer(repo, &settled.bead_id, &review_bead, pr_number, cycle)?;
     println!(
         "adversarial reviewer launched for {} cycle {} with brief {}",
@@ -1074,28 +1159,191 @@ fn launch_awaiting_reviewer(repo: &Path, settled: &SettledLane, cycle: u32) -> R
     Ok(())
 }
 
+fn post_commit_status(repo: &Path, head_sha: &str, state: CommitStatusState) -> Result<(), String> {
+    let request = commit_status_request(head_sha, state);
+    let state_field = format!("state={}", request.state.as_str());
+    let context_field = format!("context={}", request.context);
+    capture(
+        "gh",
+        &[
+            "api",
+            "--method",
+            "POST",
+            &request.endpoint,
+            "-f",
+            &state_field,
+            "-f",
+            &context_field,
+        ],
+        Some(repo),
+    )?;
+    Ok(())
+}
+
+fn latest_reviewed_adjudication(facts: &ReviewCommentFacts) -> Option<&Adjudication> {
+    facts
+        .latest_adjudication
+        .as_ref()
+        .filter(|adjudication| facts.verdict_cycles.contains(&adjudication.cycle))
+}
+
+fn next_reviewer_cycle(facts: &ReviewCommentFacts) -> u32 {
+    match facts.latest_adjudication.as_ref() {
+        Some(adjudication) if latest_reviewed_adjudication(facts).is_some() => {
+            adjudication.cycle + 1
+        }
+        Some(adjudication) => adjudication.cycle,
+        None => 1,
+    }
+}
+
+fn reconcile_commit_status(
+    repo: &Path,
+    state: LaneState,
+    pull_request: &PullRequestObservation,
+) -> Result<(), String> {
+    let Some(head_sha) = pull_request.probe.head_sha.as_deref() else {
+        return Ok(());
+    };
+    let accepted_current_head = latest_reviewed_adjudication(&pull_request.review_facts)
+        .is_some_and(|adjudication| {
+            adjudication.verdict == AdjudicationVerdict::Accepted
+                && adjudication.adjudicated_head == head_sha
+        });
+    let desired = if accepted_current_head {
+        Some(CommitStatusState::Success)
+    } else if state == LaneState::AwaitingReview {
+        Some(CommitStatusState::Pending)
+    } else {
+        None
+    };
+    let Some(desired) = desired else {
+        return Ok(());
+    };
+
+    let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{head_sha}/status");
+    let combined = capture("gh", &["api", &endpoint], Some(repo))?;
+    let posted = parse_combined_status(&combined)?;
+    let already_posted = matches!(
+        (desired, posted),
+        (CommitStatusState::Pending, PostedReviewStatus::Pending)
+            | (CommitStatusState::Success, PostedReviewStatus::Success)
+    );
+    if !already_posted {
+        post_commit_status(repo, head_sha, desired)?;
+    }
+    Ok(())
+}
+
+fn reap_reviewers_with_verdicts(
+    bead_id: &str,
+    facts: &ReviewCommentFacts,
+    agents: &[AgentView],
+) -> Result<(), String> {
+    for cycle in &facts.verdict_cycles {
+        let name = reviewer_name(bead_id, *cycle);
+        if let Some(agent) = agents
+            .iter()
+            .find(|agent| agent.name.as_deref() == Some(name.as_str()))
+        {
+            capture("herdr", &["workspace", "close", &agent.workspace_id], None)?;
+            println!(
+                "adversarial reviewer reaped for {bead_id} cycle {cycle}: workspace {}",
+                agent.workspace_id
+            );
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_review_lifecycle(
+    repo: &Path,
+    settled: &SettledLane,
+    observation: &SettledLaneObservation,
+    agents: &[AgentView],
+    launched_reviewers: &mut BTreeSet<(String, u32)>,
+) -> Result<(), String> {
+    let Some(pull_request) = observation.pull_request.as_ref() else {
+        return Ok(());
+    };
+    reap_reviewers_with_verdicts(&settled.bead_id, &pull_request.review_facts, agents)?;
+    let Some(state) = observation.state else {
+        return Ok(());
+    };
+    reconcile_commit_status(repo, state, pull_request)?;
+
+    if state != LaneState::AwaitingReview {
+        return Ok(());
+    }
+    let reviewed_adjudication = latest_reviewed_adjudication(&pull_request.review_facts);
+    let accepted_current_head = reviewed_adjudication.is_some_and(|adjudication| {
+        adjudication.verdict == AdjudicationVerdict::Accepted
+            && pull_request.probe.head_sha.as_deref()
+                == Some(adjudication.adjudicated_head.as_str())
+    });
+    if accepted_current_head {
+        return Ok(());
+    }
+    let cycle = next_reviewer_cycle(&pull_request.review_facts);
+    if pull_request.review_facts.verdict_cycles.contains(&cycle) {
+        return Ok(());
+    }
+    let live_reviewer_name = reviewer_name(&settled.bead_id, cycle);
+    if agents
+        .iter()
+        .any(|agent| agent.name.as_deref() == Some(live_reviewer_name.as_str()))
+    {
+        return Ok(());
+    }
+    if !launched_reviewers.insert((settled.bead_id.clone(), cycle)) {
+        return Ok(());
+    }
+    launch_awaiting_reviewer(repo, settled, pull_request.number, cycle)
+}
+
 /// Derive the shared lane state for a settled worker. A completed bead with no
 /// PR remains the legacy completed-and-reap case, which has no LaneState row.
 fn derive_settled_lane_state(
     repo: &Path,
     settled: &SettledLane,
     worker_active: bool,
-) -> Result<Option<LaneState>, String> {
+) -> Result<SettledLaneObservation, String> {
     let pull_request = if settled.outcome == abacus::BeadOutcome::Blocked {
         None
     } else {
         probe_pull_request(repo, &settled.lane.branch)?
     };
     if settled.outcome == abacus::BeadOutcome::Completed && pull_request.is_none() {
-        return Ok(None);
+        return Ok(SettledLaneObservation {
+            state: None,
+            pull_request: None,
+        });
     }
-    Ok(Some(derive_lane_state(LaneStateInputs {
+    let latest_adjudication = pull_request
+        .as_ref()
+        .and_then(|pull_request| latest_reviewed_adjudication(&pull_request.review_facts))
+        .map(|adjudication| abacus::lane::AdjudicationProbe {
+            disposition: match adjudication.verdict {
+                AdjudicationVerdict::Accepted => abacus::lane::AdjudicationDisposition::Accepted,
+                AdjudicationVerdict::Rework => abacus::lane::AdjudicationDisposition::Rework,
+            },
+            adjudicated_head: adjudication.adjudicated_head.as_str(),
+        });
+    let state = derive_lane_state(LaneStateInputs {
         bead_outcome: settled.outcome,
         worker_active,
-        pull_request: pull_request.as_ref(),
-        verdict_heading_count: 0,
-        latest_adjudication: None,
-    })))
+        pull_request: pull_request
+            .as_ref()
+            .map(|pull_request| &pull_request.probe),
+        verdict_heading_count: pull_request.as_ref().map_or(0, |pull_request| {
+            pull_request.review_facts.verdict_cycles.len()
+        }),
+        latest_adjudication,
+    });
+    Ok(SettledLaneObservation {
+        state: Some(state),
+        pull_request,
+    })
 }
 
 fn parse_symbolic_default_branch(output: &str) -> Result<String, String> {
@@ -1237,6 +1485,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn adjudication_transitions_and_reviewer_cycles_require_matching_verdict_cycles() {
+        let adjudication = Adjudication {
+            cycle: 2,
+            verdict: AdjudicationVerdict::Accepted,
+            findings: Vec::new(),
+            adjudicated_head: "review-head".into(),
+        };
+        let mut facts = ReviewCommentFacts {
+            verdict_cycles: Vec::new(),
+            latest_adjudication: Some(adjudication),
+        };
+
+        assert_eq!(latest_reviewed_adjudication(&facts), None);
+        assert_eq!(next_reviewer_cycle(&facts), 2);
+
+        facts.verdict_cycles.push(1);
+        assert_eq!(latest_reviewed_adjudication(&facts), None);
+        assert_eq!(next_reviewer_cycle(&facts), 2);
+
+        facts.verdict_cycles.push(2);
+        assert_eq!(latest_reviewed_adjudication(&facts).unwrap().cycle, 2);
+        assert_eq!(next_reviewer_cycle(&facts), 3);
+    }
+
+    #[test]
     fn parses_live_agent_activity_without_treating_presence_as_working() {
         let json = r#"{"result":{"agents":[
             {"name":"ab-working","agent_status":"working","cwd":"/repo","workspace_id":"w1","pane_id":"w1:p1"},
@@ -1257,7 +1530,8 @@ mod tests {
     fn pull_request_probe_distinguishes_open_merged_and_absent() {
         assert_eq!(
             parse_pull_request_probe(r#"{"state":"OPEN","mergedAt":null,"headRefOid":"head-1"}"#)
-                .unwrap(),
+                .unwrap()
+                .probe,
             PullRequestProbe {
                 state: PullRequestState::Open,
                 head_sha: Some("head-1".into()),
@@ -1268,6 +1542,7 @@ mod tests {
                 r#"{"state":"CLOSED","mergedAt":"2026-08-19T10:00:00Z","headRefOid":"head-2"}"#
             )
             .unwrap()
+            .probe
             .state,
             PullRequestState::Merged
         );
