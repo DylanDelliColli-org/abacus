@@ -216,6 +216,15 @@ fn ci_workflow_uses_the_manifest_toolchain_and_required_commands() {
         test_job.find("- name: Install br") < test_job.find("- name: Test"),
         "test job must install br before cargo test"
     );
+    let br_real_export = "export BR_REAL=\"$HOME/.cargo/bin/br\"";
+    assert!(
+        test_job.contains(br_real_export),
+        "test job must point the shim at the checksum-verified br binary"
+    );
+    assert!(
+        test_job.find(br_real_export) < test_job.find("cargo test"),
+        "test job must export BR_REAL before cargo test"
+    );
     assert!(
         workflow.contains("cargo clippy --all-targets --all-features -- -D warnings"),
         "workflow must deny clippy warnings"

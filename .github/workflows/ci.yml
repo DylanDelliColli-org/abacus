@@ -37,7 +37,9 @@ jobs:
       - name: Test
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.rust-version.outputs.version }}
-        run: cargo test
+        run: |
+          export BR_REAL="$HOME/.cargo/bin/br"
+          cargo test
 
   clippy:
     runs-on: ubuntu-latest
