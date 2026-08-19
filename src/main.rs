@@ -25,8 +25,8 @@ use abacus::lane::{
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
 use abacus::review::{
-    AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState, PostedReviewStatus,
-    ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
+    Adjudication, AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState,
+    PostedReviewStatus, ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
     parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
 };
 use abacus::{
@@ -1180,6 +1180,23 @@ fn post_commit_status(repo: &Path, head_sha: &str, state: CommitStatusState) -> 
     Ok(())
 }
 
+fn latest_reviewed_adjudication(facts: &ReviewCommentFacts) -> Option<&Adjudication> {
+    facts
+        .latest_adjudication
+        .as_ref()
+        .filter(|adjudication| facts.verdict_cycles.contains(&adjudication.cycle))
+}
+
+fn next_reviewer_cycle(facts: &ReviewCommentFacts) -> u32 {
+    match facts.latest_adjudication.as_ref() {
+        Some(adjudication) if latest_reviewed_adjudication(facts).is_some() => {
+            adjudication.cycle + 1
+        }
+        Some(adjudication) => adjudication.cycle,
+        None => 1,
+    }
+}
+
 fn reconcile_commit_status(
     repo: &Path,
     state: LaneState,
@@ -1188,10 +1205,7 @@ fn reconcile_commit_status(
     let Some(head_sha) = pull_request.probe.head_sha.as_deref() else {
         return Ok(());
     };
-    let accepted_current_head = pull_request
-        .review_facts
-        .latest_adjudication
-        .as_ref()
+    let accepted_current_head = latest_reviewed_adjudication(&pull_request.review_facts)
         .is_some_and(|adjudication| {
             adjudication.verdict == AdjudicationVerdict::Accepted
                 && adjudication.adjudicated_head == head_sha
@@ -1261,23 +1275,16 @@ fn reconcile_review_lifecycle(
     if state != LaneState::AwaitingReview {
         return Ok(());
     }
-    let accepted_current_head = pull_request
-        .review_facts
-        .latest_adjudication
-        .as_ref()
-        .is_some_and(|adjudication| {
-            adjudication.verdict == AdjudicationVerdict::Accepted
-                && pull_request.probe.head_sha.as_deref()
-                    == Some(adjudication.adjudicated_head.as_str())
-        });
+    let reviewed_adjudication = latest_reviewed_adjudication(&pull_request.review_facts);
+    let accepted_current_head = reviewed_adjudication.is_some_and(|adjudication| {
+        adjudication.verdict == AdjudicationVerdict::Accepted
+            && pull_request.probe.head_sha.as_deref()
+                == Some(adjudication.adjudicated_head.as_str())
+    });
     if accepted_current_head {
         return Ok(());
     }
-    let cycle = pull_request
-        .review_facts
-        .latest_adjudication
-        .as_ref()
-        .map_or(1, |adjudication| adjudication.cycle + 1);
+    let cycle = next_reviewer_cycle(&pull_request.review_facts);
     if pull_request.review_facts.verdict_cycles.contains(&cycle) {
         return Ok(());
     }
@@ -1314,7 +1321,7 @@ fn derive_settled_lane_state(
     }
     let latest_adjudication = pull_request
         .as_ref()
-        .and_then(|pull_request| pull_request.review_facts.latest_adjudication.as_ref())
+        .and_then(|pull_request| latest_reviewed_adjudication(&pull_request.review_facts))
         .map(|adjudication| abacus::lane::AdjudicationProbe {
             disposition: match adjudication.verdict {
                 AdjudicationVerdict::Accepted => abacus::lane::AdjudicationDisposition::Accepted,
@@ -1476,6 +1483,31 @@ fn capture_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adjudication_transitions_and_reviewer_cycles_require_matching_verdict_cycles() {
+        let adjudication = Adjudication {
+            cycle: 2,
+            verdict: AdjudicationVerdict::Accepted,
+            findings: Vec::new(),
+            adjudicated_head: "review-head".into(),
+        };
+        let mut facts = ReviewCommentFacts {
+            verdict_cycles: Vec::new(),
+            latest_adjudication: Some(adjudication),
+        };
+
+        assert_eq!(latest_reviewed_adjudication(&facts), None);
+        assert_eq!(next_reviewer_cycle(&facts), 2);
+
+        facts.verdict_cycles.push(1);
+        assert_eq!(latest_reviewed_adjudication(&facts), None);
+        assert_eq!(next_reviewer_cycle(&facts), 2);
+
+        facts.verdict_cycles.push(2);
+        assert_eq!(latest_reviewed_adjudication(&facts).unwrap().cycle, 2);
+        assert_eq!(next_reviewer_cycle(&facts), 3);
+    }
 
     #[test]
     fn parses_live_agent_activity_without_treating_presence_as_working() {

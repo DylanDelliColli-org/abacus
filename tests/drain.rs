@@ -710,6 +710,64 @@ fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
 }
 
 #[test]
+fn owner_acceptance_without_matching_verdict_stays_awaiting_and_launches_reviewer() {
+    let bead_id = "it-unreviewed-acceptance";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{"login":"repository-owner"},"authorAssociation":"OWNER"}]}"####;
+    let (output, herdr_calls, gh_calls) =
+        run_absent_closed_pr_sweep("unreviewed-owner-acceptance", bead_id, pull_request, false);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "an acceptance without its reviewer verdict must remain AwaitingReview: {stdout}"
+    );
+    assert!(
+        !gh_calls.contains("state=success"),
+        "an acceptance without its reviewer verdict flipped the status:\n{gh_calls}"
+    );
+    assert!(
+        gh_calls.contains("state=pending"),
+        "the inert acceptance did not preserve the pending review lifecycle:\n{gh_calls}"
+    );
+    assert!(
+        herdr_calls.contains("agent start rev-it-unreviewed-acceptance-c1"),
+        "the inert cycle-1 acceptance suppressed or advanced the reviewer launch:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
+    let bead_id = "it-unreviewed-rework";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Premature ruling.\n\nFinding 1 (blocker — missing reviewer verdict): ACCEPTED. This ruling is inert.\n\nAdjudicated head: review-head","author":{"login":"repository-owner"},"authorAssociation":"OWNER"}]}"####;
+    let (output, herdr_calls, _gh_calls) =
+        run_absent_closed_pr_sweep("unreviewed-owner-rework", bead_id, pull_request, false);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !stdout.contains("rework-requested:"),
+        "an adjudication without its reviewer verdict drove ReworkRequested: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "an unreviewed rework ruling must remain AwaitingReview: {stdout}"
+    );
+    assert!(
+        herdr_calls.contains("agent start rev-it-unreviewed-rework-c1"),
+        "the inert cycle-1 rework ruling suppressed or advanced the reviewer launch:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
     let bead_id = "it-review";
     let workspace = TempDir::new("drain-review-launch");
