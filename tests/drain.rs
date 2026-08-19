@@ -478,9 +478,9 @@ fn run_classifies_closed_open_pr_as_awaiting_review_and_keeps_lane_warm() {
         "an awaiting-review run lane must remain warm:\n{calls}"
     );
     assert!(
-        std::fs::read_to_string(gh_calls)
-            .unwrap()
-            .contains("pr view lane/it-run-review --json state,mergedAt,headRefOid"),
+        std::fs::read_to_string(gh_calls).unwrap().contains(
+            "pr view lane/it-run-review --json state,mergedAt,headRefOid,number,comments"
+        ),
         "run must probe the lane PR before classifying the settle"
     );
 }
@@ -697,7 +697,7 @@ fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
     assert_eq!(
         gh_calls,
         format!(
-            "pr view lane/{bead_id} --json state,mergedAt,headRefOid\npr view lane/{bead_id} --json number --jq .number\n"
+            "pr view lane/{bead_id} --json state,mergedAt,headRefOid,number,comments\napi repos/{{owner}}/{{repo}}/commits/review-head/status\napi --method POST repos/{{owner}}/{{repo}}/statuses/review-head -f state=pending -f context=adversarial-review\npr view lane/{bead_id} --json number --jq .number\n"
         ),
         "the live open PR and its review target number are probed once"
     );
@@ -763,7 +763,7 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
     let fake_gh = fake_bin.join("gh");
     std::fs::write(
         &fake_gh,
-        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"state,mergedAt,headRefOid\" ]; then\n  printf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"review-head\"}'\nelif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"number\" ]; then\n  printf '42\\n'\nelse\n  printf 'unexpected gh call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"state,mergedAt,headRefOid,number,comments\" ]; then\n  printf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"review-head\"}'\nelif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"number\" ]; then\n  printf '42\\n'\nelif [ \"$1 $2\" = \"api repos/{owner}/{repo}/commits/review-head/status\" ]; then\n  printf '%s\\n' '{\"state\":\"pending\",\"statuses\":[],\"total_count\":0}'\nelif [ \"$1 $2 $3 $4\" = \"api --method POST repos/{owner}/{repo}/statuses/review-head\" ]; then\n  exit 0\nelse\n  printf 'unexpected gh call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
     )
     .unwrap();
     let fake_git = fake_bin.join("git");
@@ -842,6 +842,157 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
 }
 
 #[test]
+fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudication() {
+    let bead_id = "it-review-status";
+    let workspace = TempDir::new("drain-review-status-lifecycle");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    std::fs::write(workspace.0.join("AGENTS.md"), "review fixture authority\n").unwrap();
+    let phase = workspace.0.join("phase");
+    let posted_status = workspace.0.join("posted-status");
+    let gh_calls = workspace.0.join("gh-calls");
+    let herdr_calls = workspace.0.join("herdr-calls");
+    std::fs::write(&phase, "1\n").unwrap();
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               IFS= read -r current_phase < '{phase}'\n\
+               if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+               elif [ \"$current_phase\" = \"2\" ]; then printf '[{{\"id\":\"it-phase-2\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+               else printf '[]\\n'; fi\n\
+             elif [ \"$1 $2 $3\" = \"update it-phase-1 --claim\" ]; then\n\
+               printf '2\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
+             elif [ \"$1 $2 $3\" = \"update it-phase-2 --claim\" ]; then\n\
+               printf '3\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"id\":\"{bead_id}\",\"status\":\"closed\",\"description\":\"Review fixture.\",\"comments\":[]}}]\\n'\n\
+             else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            phase = phase.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             IFS= read -r current_phase < '{phase}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               if [ \"$current_phase\" = \"2\" ]; then\n\
+                 printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"rev-it-review-status-c1\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"reviewer-workspace\",\"pane_id\":\"reviewer-pane\"}}]}}}}'\n\
+               else printf '%s\\n' '{{\"result\":{{\"agents\":[]}}}}'; fi\n\
+             elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"reviewer-workspace\"}},\"root_pane\":{{\"pane_id\":\"reviewer-pane\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent start\" ]; then exit 0\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then printf 'reviewer settled\\n'\n\
+             elif [ \"$1 $2 $3\" = \"workspace close reviewer-workspace\" ]; then exit 0\n\
+             else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            calls = herdr_calls.display(),
+            phase = phase.display(),
+            root = workspace.0.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            r####"#!/bin/sh
+printf '%s\n' "$*" >> '{calls}'
+IFS= read -r current_phase < '{phase}'
+if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
+  if [ "$5" = "number" ]; then printf '42\n'
+  elif [ "$current_phase" = "1" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[]}}'
+  elif [ "$current_phase" = "2" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**"}},{{"body":"## Adjudication — cycle 1\n\nAdjudicated head: `review-head`\n\n**Verdict REFUTED — rework required.**\n\n- Finding 1\n  Accepted — rework spec 1"}}]}}'
+  else printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**"}},{{"body":"## Adjudication — cycle 1\n\nAdjudicated head: `review-head`\n\n**Verdict REFUTED — rework required.**\n\n- Finding 1\n  Accepted — rework spec 1"}},{{"body":"## Adversarial review — cycle 2\n\n**Verdict NOT REFUTED.**"}},{{"body":"## Adjudication — cycle 2\n\nAdjudicated head: `review-head`\n\n**Verdict NOT REFUTED — accepted.**"}}]}}'; fi
+elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/review-head/status" ]; then
+  if [ -f '{posted_status}' ]; then IFS= read -r state < '{posted_status}'; printf '{{"state":"%s","statuses":[{{"state":"%s","context":"adversarial-review"}}],"total_count":1}}\n' "$state" "$state"
+  else printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'; fi
+elif [ "$1 $2" = "api --method" ] && [ "$3" = "POST" ] && [ "$4" = "repos/{{owner}}/{{repo}}/statuses/review-head" ]; then
+  if [ "$6" = "state=pending" ] || [ "$6" = "state=success" ]; then printf '%s\n' "${{6#state=}}" > '{posted_status}'; else printf 'missing status state: %s\n' "$*" >&2; exit 2; fi
+else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
+"####,
+            calls = gh_calls.display(),
+            phase = phase.display(),
+            posted_status = posted_status.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("rework-requested: 1 [{bead_id}")),
+        "the rework adjudication did not drive LaneState from parsed PR comments: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    let status_posts: Vec<_> = gh_calls
+        .lines()
+        .filter(|call| call.contains("api --method POST repos/{owner}/{repo}/statuses/review-head"))
+        .collect();
+    assert_eq!(status_posts.len(), 2, "GitHub calls:\n{gh_calls}");
+    assert!(status_posts[0].contains("state=pending"), "{gh_calls}");
+    assert!(status_posts[1].contains("state=success"), "{gh_calls}");
+    assert_eq!(
+        status_posts
+            .iter()
+            .filter(|call| call.contains("state=pending"))
+            .count(),
+        1,
+        "pending must be posted exactly once:\n{gh_calls}"
+    );
+    for forbidden in ["state=failure", "rulesets", "/protection"] {
+        assert!(
+            !gh_calls.contains(forbidden),
+            "forbidden GitHub mutation {forbidden}:\n{gh_calls}"
+        );
+    }
+    let herdr_calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call == &"workspace close reviewer-workspace")
+            .count(),
+        1,
+        "the reviewer workspace must be reaped after its verdict exists:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn restart_sweep_reports_absent_closed_merged_pr_as_merged() {
     let bead_id = "it-closed-merged";
     let (output, herdr_calls, gh_calls) = run_absent_closed_pr_sweep(
@@ -863,7 +1014,7 @@ fn restart_sweep_reports_absent_closed_merged_pr_as_merged() {
     );
     assert_eq!(
         gh_calls,
-        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
+        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid,number,comments\n"),
         "Merged becomes absorbing after its first handled probe"
     );
     assert!(
@@ -993,7 +1144,7 @@ fn assert_in_progress_merged_row(agent_status: Option<&str>, row: &str) {
     );
     assert_eq!(
         gh_calls,
-        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
+        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid,number,comments\n"),
         "Merged must be probed once and then absorbed across the forced second sweep"
     );
     let removals: Vec<_> = herdr_calls

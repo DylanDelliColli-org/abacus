@@ -26,6 +26,272 @@ pub const FINDING_REJECTED_PREFIX: &str = "Rejected — ";
 pub const FINDING_REROUTED_PREFIX: &str = "Rerouted — ";
 pub const ADJUDICATED_HEAD_PREFIX: &str = "Adjudicated head: ";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdjudicationVerdict {
+    Accepted,
+    Rework,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindingDisposition {
+    Accepted,
+    Rejected,
+    Rerouted,
+}
+
+impl FindingDisposition {
+    fn grammar_prefix(self) -> &'static str {
+        match self {
+            Self::Accepted => FINDING_ACCEPTED_PREFIX,
+            Self::Rejected => FINDING_REJECTED_PREFIX,
+            Self::Rerouted => FINDING_REROUTED_PREFIX,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindingAdjudication {
+    pub finding: String,
+    pub disposition: FindingDisposition,
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adjudication {
+    pub cycle: u32,
+    pub verdict: AdjudicationVerdict,
+    pub findings: Vec<FindingAdjudication>,
+    pub adjudicated_head: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedReviewComment {
+    NotAdjudication,
+    Adjudication(Adjudication),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReviewCommentFacts {
+    pub verdict_cycles: Vec<u32>,
+    pub latest_adjudication: Option<Adjudication>,
+}
+
+fn heading_cycle(line: &str, prefix: &str) -> Option<u32> {
+    let remainder = line.strip_prefix(prefix)?;
+    let digits: String = remainder.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+fn parse_adjudicated_head(line: &str) -> Option<String> {
+    let head = line.strip_prefix(ADJUDICATED_HEAD_PREFIX)?.trim();
+    let head = head
+        .strip_prefix('`')
+        .and_then(|head| head.strip_suffix('`'))
+        .unwrap_or(head);
+    (!head.is_empty()).then(|| head.to_owned())
+}
+
+fn production_finding(line: &str) -> Option<FindingAdjudication> {
+    let body = line.trim().strip_prefix("- **")?;
+    let (finding, ruling) = body.split_once(" — ")?;
+    let (ruling_label, destination) = ruling.split_once("**").unwrap_or((ruling, ""));
+    let lower = ruling_label.to_ascii_lowercase();
+    let disposition = if lower.contains("rerouted") {
+        FindingDisposition::Rerouted
+    } else if lower.contains("rejected") {
+        FindingDisposition::Rejected
+    } else if lower.contains("accepted") {
+        FindingDisposition::Accepted
+    } else {
+        return None;
+    };
+    let destination = destination.trim().trim_start_matches('→').trim().to_owned();
+    Some(FindingAdjudication {
+        finding: finding.to_owned(),
+        disposition,
+        destination,
+    })
+}
+
+fn canonical_finding(line: &str, next: Option<&str>) -> Option<FindingAdjudication> {
+    let finding = line.trim().strip_prefix("- ")?;
+    if finding.starts_with("**") {
+        return None;
+    }
+    let disposition_line = next?.trim();
+    let (disposition, destination) = [
+        (FindingDisposition::Accepted, FINDING_ACCEPTED_PREFIX),
+        (FindingDisposition::Rejected, FINDING_REJECTED_PREFIX),
+        (FindingDisposition::Rerouted, FINDING_REROUTED_PREFIX),
+    ]
+    .into_iter()
+    .find_map(|(disposition, prefix)| {
+        disposition_line
+            .strip_prefix(prefix)
+            .map(|destination| (disposition, destination))
+    })?;
+    Some(FindingAdjudication {
+        finding: finding.to_owned(),
+        disposition,
+        destination: destination.to_owned(),
+    })
+}
+
+pub fn parse_review_comment(body: &str) -> Result<ParsedReviewComment, String> {
+    let Some(first_line) = body.lines().next() else {
+        return Ok(ParsedReviewComment::NotAdjudication);
+    };
+    if !first_line.starts_with(ADJUDICATION_HEADING_PREFIX) {
+        return Ok(ParsedReviewComment::NotAdjudication);
+    }
+    let cycle = heading_cycle(first_line, ADJUDICATION_HEADING_PREFIX)
+        .ok_or_else(|| format!("invalid adjudication cycle heading: {first_line:?}"))?;
+    let adjudicated_head = body
+        .lines()
+        .find_map(parse_adjudicated_head)
+        .ok_or_else(|| "adjudication is missing its Adjudicated head line".to_owned())?;
+    let verdict = if body
+        .lines()
+        .any(|line| line.starts_with(ADJUDICATION_ACCEPTED_VERDICT))
+    {
+        AdjudicationVerdict::Accepted
+    } else if body
+        .lines()
+        .any(|line| line.starts_with(ADJUDICATION_REWORK_VERDICT))
+    {
+        AdjudicationVerdict::Rework
+    } else {
+        return Err("adjudication is missing its fixed verdict line".to_owned());
+    };
+
+    let lines: Vec<_> = body.lines().collect();
+    let mut findings = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(finding) = production_finding(line)
+            .or_else(|| canonical_finding(line, lines.get(index + 1).copied()))
+        {
+            findings.push(finding);
+        }
+    }
+    Ok(ParsedReviewComment::Adjudication(Adjudication {
+        cycle,
+        verdict,
+        findings,
+        adjudicated_head,
+    }))
+}
+
+pub fn review_comment_facts(comments: &[&str]) -> Result<ReviewCommentFacts, String> {
+    let mut facts = ReviewCommentFacts::default();
+    for comment in comments {
+        if let Some(first_line) = comment.lines().next() {
+            if let Some(cycle) = heading_cycle(first_line, VERDICT_HEADING_PREFIX) {
+                facts.verdict_cycles.push(cycle);
+            }
+        }
+        if let ParsedReviewComment::Adjudication(adjudication) = parse_review_comment(comment)? {
+            if facts
+                .latest_adjudication
+                .as_ref()
+                .is_none_or(|latest| adjudication.cycle > latest.cycle)
+            {
+                facts.latest_adjudication = Some(adjudication);
+            }
+        }
+    }
+    facts.verdict_cycles.sort_unstable();
+    facts.verdict_cycles.dedup();
+    Ok(facts)
+}
+
+pub fn adjudication_body(adjudication: &Adjudication) -> String {
+    let verdict = match adjudication.verdict {
+        AdjudicationVerdict::Accepted => ADJUDICATION_ACCEPTED_VERDICT,
+        AdjudicationVerdict::Rework => ADJUDICATION_REWORK_VERDICT,
+    };
+    let mut body = format!(
+        "{ADJUDICATION_HEADING_PREFIX}{}\n\n{ADJUDICATED_HEAD_PREFIX}`{}`\n\n{verdict}",
+        adjudication.cycle, adjudication.adjudicated_head
+    );
+    for finding in &adjudication.findings {
+        body.push_str(&format!(
+            "\n\n- {}\n  {}{}",
+            finding.finding,
+            finding.disposition.grammar_prefix(),
+            finding.destination
+        ));
+    }
+    body
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitStatusState {
+    Pending,
+    Success,
+}
+
+impl CommitStatusState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Success => "success",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitStatusRequest {
+    pub endpoint: String,
+    pub context: &'static str,
+    pub state: CommitStatusState,
+}
+
+pub fn commit_status_request(sha: &str, state: CommitStatusState) -> CommitStatusRequest {
+    CommitStatusRequest {
+        endpoint: format!("repos/{{owner}}/{{repo}}/statuses/{sha}"),
+        context: STATUS_CONTEXT,
+        state,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostedReviewStatus {
+    Absent,
+    Pending,
+    Success,
+}
+
+#[derive(Deserialize)]
+struct CombinedStatus {
+    #[serde(default)]
+    statuses: Vec<CombinedStatusEntry>,
+}
+
+#[derive(Deserialize)]
+struct CombinedStatusEntry {
+    state: String,
+    context: String,
+}
+
+pub fn parse_combined_status(json: &str) -> Result<PostedReviewStatus, String> {
+    let combined: CombinedStatus = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable GitHub combined status: {error}"))?;
+    let Some(status) = combined
+        .statuses
+        .iter()
+        .find(|status| status.context == STATUS_CONTEXT)
+    else {
+        return Ok(PostedReviewStatus::Absent);
+    };
+    match status.state.as_str() {
+        "pending" => Ok(PostedReviewStatus::Pending),
+        "success" => Ok(PostedReviewStatus::Success),
+        other => Err(format!(
+            "unsupported {STATUS_CONTEXT} commit status state {other:?}"
+        )),
+    }
+}
+
 /// The stable role card appended to every dynamically scoped review brief.
 pub const REFUTATION_BRIEF_TEMPLATE: &str = r#"## Read-only ground rules
 
@@ -243,6 +509,155 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    const CAPTURED_ACCEPTED_ADJUDICATION: &str = r#"## Adjudication — cycle 6 (operator-ruled bounds, 2026-08-18)
+
+Adjudicated head: `0bd7b70e2e271427b779da7fc176908837f54b31`
+
+**Verdict NOT REFUTED — accepted.** Within the ruled bounds, both fixes survived execution.
+
+**PR #27 is cleared for merge at `0bd7b70`.**"#;
+
+    // Hand-adjusted from the PR 25/26 production convention: those records
+    // predate the fixed Adjudicated-head line adopted for PR 27.
+    const CAPTURED_REWORK_ADJUDICATION: &str = r#"## Adjudication — cycle 1 (operator-ruled 2026-08-18)
+
+Adjudicated head: `ac049b4f5283f83fc3ebaaa4f4ddc59e97d3c899`
+
+**Verdict REFUTED — rework required.**
+
+- **Finding 7 — accepted (blocker).** ADR 0009 §4 verified: a refused turn leaves the working set unchanged. Fix: refusal exclusivity in `_apply_event` (`named_default` + entries stays legal). → fixed in `9a4c765`.
+- **Finding 3 — valid but pre-existing; rerouted.** The diff is 96 insertions / 0 deletions: the narrow regex predates this change; what is new is the free-text ingress. Widening the scanner touches a regex shared by all event types → filed as bead `mb-zgdy` (P1) with the token-shape list and test spec."#;
+
+    const CAPTURED_REFUTED_REVIEWER_VERDICT: &str = r#"## Adversarial review — cycle 1
+
+1. **Blocker — payload validation is only shallow.** A malformed payload persists.
+
+**Verdict REFUTED.**
+
+## Probes
+
+- Executed the malformed payload."#;
+
+    #[test]
+    fn parses_the_captured_accepted_adjudication() {
+        let ParsedReviewComment::Adjudication(parsed) =
+            parse_review_comment(CAPTURED_ACCEPTED_ADJUDICATION).unwrap()
+        else {
+            panic!("captured accepted adjudication was not recognized");
+        };
+
+        assert_eq!(parsed.cycle, 6);
+        assert_eq!(parsed.verdict, AdjudicationVerdict::Accepted);
+        assert_eq!(
+            parsed.adjudicated_head,
+            "0bd7b70e2e271427b779da7fc176908837f54b31"
+        );
+        assert!(parsed.findings.is_empty());
+    }
+
+    #[test]
+    fn parses_a_rework_requesting_adjudication() {
+        let ParsedReviewComment::Adjudication(parsed) =
+            parse_review_comment(CAPTURED_REWORK_ADJUDICATION).unwrap()
+        else {
+            panic!("captured rework adjudication was not recognized");
+        };
+
+        assert_eq!(parsed.cycle, 1);
+        assert_eq!(parsed.verdict, AdjudicationVerdict::Rework);
+        assert_eq!(parsed.findings.len(), 2);
+        assert_eq!(parsed.findings[0].finding, "Finding 7");
+        assert_eq!(parsed.findings[0].disposition, FindingDisposition::Accepted);
+        assert!(parsed.findings[0].destination.contains("9a4c765"));
+        assert_eq!(parsed.findings[1].disposition, FindingDisposition::Rerouted);
+        assert!(parsed.findings[1].destination.contains("mb-zgdy"));
+    }
+
+    #[test]
+    fn reviewer_verdict_bodies_are_never_parsed_as_adjudications() {
+        assert_eq!(
+            parse_review_comment(CAPTURED_REFUTED_REVIEWER_VERDICT).unwrap(),
+            ParsedReviewComment::NotAdjudication
+        );
+        let facts = review_comment_facts(&[CAPTURED_REFUTED_REVIEWER_VERDICT]).unwrap();
+        assert_eq!(facts.verdict_cycles, vec![1]);
+        assert_eq!(facts.latest_adjudication, None);
+    }
+
+    #[test]
+    fn latest_adjudication_cycle_wins() {
+        let facts =
+            review_comment_facts(&[CAPTURED_ACCEPTED_ADJUDICATION, CAPTURED_REWORK_ADJUDICATION])
+                .unwrap();
+
+        assert_eq!(facts.latest_adjudication.unwrap().cycle, 6);
+    }
+
+    #[test]
+    fn adjudication_body_builder_round_trips_through_the_parser() {
+        let expected = Adjudication {
+            cycle: 7,
+            verdict: AdjudicationVerdict::Rework,
+            findings: vec![
+                FindingAdjudication {
+                    finding: "Finding 1".into(),
+                    disposition: FindingDisposition::Accepted,
+                    destination: "fix commit `abc123`".into(),
+                },
+                FindingAdjudication {
+                    finding: "Finding 2".into(),
+                    disposition: FindingDisposition::Rerouted,
+                    destination: "bead `ab-follow-up`".into(),
+                },
+                FindingAdjudication {
+                    finding: "Finding 3".into(),
+                    disposition: FindingDisposition::Rejected,
+                    destination: "the producer cannot reach this path".into(),
+                },
+            ],
+            adjudicated_head: "0123456789abcdef".into(),
+        };
+        let body = adjudication_body(&expected);
+
+        assert_eq!(
+            parse_review_comment(&body).unwrap(),
+            ParsedReviewComment::Adjudication(expected)
+        );
+    }
+
+    #[test]
+    fn status_context_and_states_are_pending_or_success_only() {
+        let pending = commit_status_request("abc123", CommitStatusState::Pending);
+        let success = commit_status_request("abc123", CommitStatusState::Success);
+
+        assert_eq!(pending.endpoint, "repos/{owner}/{repo}/statuses/abc123");
+        assert_eq!(pending.context, STATUS_CONTEXT);
+        assert_eq!(success.context, STATUS_CONTEXT);
+        assert_eq!(
+            [pending.state.as_str(), success.state.as_str()]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["pending", "success"])
+        );
+    }
+
+    #[test]
+    fn combined_status_reader_distinguishes_absent_from_posted_pending() {
+        const ZERO_STATUSES_LIVE_FIXTURE: &str = r#"{"sha":"e5af2768c307f7d656371fb25c6e2c70ce3b9d29","state":"pending","statuses":[],"total_count":0}"#;
+        // Same live response shape, hand-adjusted with the status entry whose
+        // presence is the semantic distinction under test.
+        const POSTED_PENDING_LIVE_FIXTURE: &str = r#"{"state":"pending","statuses":[{"state":"pending","context":"adversarial-review","description":null,"target_url":null}],"sha":"abc123","total_count":1}"#;
+
+        assert_eq!(
+            parse_combined_status(ZERO_STATUSES_LIVE_FIXTURE).unwrap(),
+            PostedReviewStatus::Absent
+        );
+        assert_eq!(
+            parse_combined_status(POSTED_PENDING_LIVE_FIXTURE).unwrap(),
+            PostedReviewStatus::Pending
+        );
+    }
 
     #[test]
     fn refutation_brief_carries_targets_ground_rules_and_verdict_grammar() {
