@@ -190,6 +190,19 @@ fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> &str {
         .expect("panic must carry a string message")
 }
 
+#[cfg(unix)]
+fn install_no_pr_gh_stub(fake_bin: &Path) {
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_gh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(fake_gh, permissions).unwrap();
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
@@ -714,6 +727,7 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -831,6 +845,7 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -937,6 +952,7 @@ fn abacus_run_discovers_the_remote_default_without_a_local_origin_head() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -1211,6 +1227,7 @@ fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
@@ -1314,6 +1331,7 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
     let lane_json = serde_json::json!({
@@ -1394,6 +1412,7 @@ fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engag
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_br = fake_bin.join("br");
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
@@ -1511,6 +1530,7 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let prompt_attempts = ws.0.join("prompt-attempts");
     let lane_json = serde_json::json!({
