@@ -85,12 +85,13 @@ pub fn derive_lane_state(inputs: LaneStateInputs<'_>) -> LaneState {
     if inputs.bead_outcome == BeadOutcome::Blocked {
         return LaneState::Blocked;
     }
-    if let (Some(pr), Some(adjudication)) = (inputs.pull_request, inputs.latest_adjudication)
-        && pr.state == PullRequestState::Open
-        && adjudication.disposition == AdjudicationDisposition::Rework
-        && pr.head_sha.as_deref() == Some(adjudication.adjudicated_head)
-    {
-        return LaneState::ReworkRequested;
+    if let (Some(pr), Some(adjudication)) = (inputs.pull_request, inputs.latest_adjudication) {
+        if pr.state == PullRequestState::Open
+            && adjudication.disposition == AdjudicationDisposition::Rework
+            && pr.head_sha.as_deref() == Some(adjudication.adjudicated_head)
+        {
+            return LaneState::ReworkRequested;
+        }
     }
     if inputs.bead_outcome == BeadOutcome::Completed
         && inputs
@@ -394,11 +395,11 @@ pub fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<Strin
 mod tests {
     use super::*;
 
-    fn inputs<'a>(
+    fn inputs(
         bead_outcome: BeadOutcome,
         worker_active: bool,
-        pull_request: Option<&'a PullRequestProbe>,
-    ) -> LaneStateInputs<'a> {
+        pull_request: Option<&PullRequestProbe>,
+    ) -> LaneStateInputs<'_> {
         LaneStateInputs {
             bead_outcome,
             worker_active,
