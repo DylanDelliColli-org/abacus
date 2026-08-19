@@ -17,7 +17,11 @@ use abacus::land::{
     ValidationFailure, admission_red_park_body, decide, dequeue_park_body, enumerate_candidates,
     parse_eligibility, parse_enqueue_result, parse_queue_state,
 };
-use abacus::lane::{capture, lane_open, lane_prompt, lane_reap, lane_settle};
+use abacus::lane::{
+    LaneState, LaneStateInputs, MorningReport, PullRequestProbe, PullRequestState, capture,
+    derive_lane_state, lane_open, lane_prompt, lane_reap, lane_reap_blocked, lane_settle,
+    probe_bead_outcome,
+};
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
 use abacus::{
@@ -36,9 +40,13 @@ fn main() {
         }
         Some("run") => {
             let repo = args.get(1).map(PathBuf::from).unwrap_or_else(|| ".".into());
-            if let Err(e) = cmd_run(&repo) {
-                eprintln!("abacus run: {e}");
-                exit(1);
+            match cmd_run(&repo) {
+                Ok(0) => {}
+                Ok(code) => exit(code),
+                Err(e) => {
+                    eprintln!("abacus run: {e}");
+                    exit(1);
+                }
             }
         }
         Some("drain") => {
@@ -679,8 +687,15 @@ fn cmd_merge_jsonl(ours: &Path, base: &Path, theirs: &Path) -> Result<(), String
 
 enum DispatchCycle {
     Empty,
-    Completed,
+    Settled(SettledLane),
     ClaimLost(String),
+}
+
+struct SettledLane {
+    bead_id: String,
+    lane: abacus::Lane,
+    outcome: abacus::BeadOutcome,
+    elapsed_secs: u64,
 }
 
 fn resolve_repo(repo: &Path) -> Result<PathBuf, String> {
@@ -688,15 +703,50 @@ fn resolve_repo(repo: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("cannot resolve repo path {}: {e}", repo.display()))
 }
 
-fn cmd_run(repo: &Path) -> Result<(), String> {
+fn cmd_run(repo: &Path) -> Result<i32, String> {
     let repo = resolve_repo(repo)?;
     let repo_str = repo.to_string_lossy().into_owned();
     match dispatch_cycle(&repo, &repo_str, &BTreeSet::new(), false)? {
         DispatchCycle::Empty => {
             println!("no ready beads in {repo_str}; nothing to dispatch");
-            Ok(())
+            Ok(0)
         }
-        DispatchCycle::Completed => Ok(()),
+        DispatchCycle::Settled(settled) => match settled.outcome {
+            abacus::BeadOutcome::Completed => {
+                lane_reap(settled.outcome, &settled.lane)?;
+                println!(
+                    "bead {} is closed; worker completed in {}",
+                    settled.bead_id,
+                    format_lane_duration(settled.elapsed_secs)
+                );
+                Ok(0)
+            }
+            abacus::BeadOutcome::Blocked => {
+                lane_reap_blocked(&settled.lane)?;
+                eprintln!(
+                    "bead {} is in_progress; worker reported BLOCKED after {}",
+                    settled.bead_id,
+                    format_lane_duration(settled.elapsed_secs)
+                );
+                Ok(3)
+            }
+            abacus::BeadOutcome::Incomplete => {
+                eprintln!(
+                    "bead {} is in_progress; lane is stalled after worker settled before completing ({})",
+                    settled.bead_id,
+                    format_lane_duration(settled.elapsed_secs)
+                );
+                Ok(3)
+            }
+            abacus::BeadOutcome::NeverEngaged => {
+                eprintln!(
+                    "bead {} is open; lane is stalled because the worker never engaged after {}",
+                    settled.bead_id,
+                    format_lane_duration(settled.elapsed_secs)
+                );
+                Ok(3)
+            }
+        },
         DispatchCycle::ClaimLost(_) => unreachable!("run treats claim failures as errors"),
     }
 }
@@ -705,19 +755,246 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
     let repo = resolve_repo(repo)?;
     let repo_str = repo.to_string_lossy().into_owned();
     let mut lost_claims = BTreeSet::new();
+    let mut report = MorningReport::default();
+    let mut reported_states = BTreeSet::new();
 
     loop {
+        if sweep_live_lanes(&repo, &mut report, &mut reported_states)? {
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
         match dispatch_cycle(&repo, &repo_str, &lost_claims, true)? {
             DispatchCycle::Empty => {
                 println!("no ready beads in {repo_str}; nothing to dispatch");
+                let rendered = report.render();
+                if !rendered.is_empty() {
+                    println!("morning report:\n{rendered}");
+                }
                 return Ok(());
             }
-            DispatchCycle::Completed => {}
+            DispatchCycle::Settled(settled) => {
+                record_drain_settle(&repo, settled, false, &mut report, &mut reported_states)?;
+            }
             DispatchCycle::ClaimLost(bead_id) => {
                 lost_claims.insert(bead_id);
             }
         }
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AgentListEnvelope {
+    result: AgentListResult,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AgentListResult {
+    #[serde(default)]
+    agents: Vec<AgentView>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct AgentView {
+    #[serde(default)]
+    name: Option<String>,
+    agent_status: String,
+    cwd: String,
+    workspace_id: String,
+    pane_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct BeadListEnvelope {
+    issues: Vec<ListedLaneBead>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ListedLaneBead {
+    id: String,
+    status: String,
+}
+
+fn parse_agent_list(json: &str) -> Result<Vec<AgentView>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let envelope: AgentListEnvelope = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable `herdr agent list` output: {error}"))?;
+    Ok(envelope.result.agents)
+}
+
+fn parse_lane_beads(json: &str) -> Result<Vec<ListedLaneBead>, String> {
+    let envelope: BeadListEnvelope = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable `br list --json` output: {error}"))?;
+    Ok(envelope.issues)
+}
+
+fn agent_belongs_to_repo(agent: &AgentView, repo: &Path) -> bool {
+    let Some(repo_name) = repo.file_name() else {
+        return false;
+    };
+    Path::new(&agent.cwd) == repo
+        || Path::new(&agent.cwd)
+            .components()
+            .any(|component| component.as_os_str() == repo_name)
+}
+
+/// Reconstruct warm lanes from durable bead state plus Herdr's deterministic
+/// agent names. Returning true means an author is still active, so the serial
+/// drain must sweep again rather than dispatching a second worker.
+fn sweep_live_lanes(
+    repo: &Path,
+    report: &mut MorningReport,
+    reported_states: &mut BTreeSet<(String, String)>,
+) -> Result<bool, String> {
+    let agents = parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?;
+    let agents: Vec<_> = agents
+        .into_iter()
+        .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
+        .collect();
+    if agents.is_empty() {
+        return Ok(false);
+    }
+
+    let beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
+    let mut authoring = false;
+    for bead in beads
+        .into_iter()
+        .filter(|bead| matches!(bead.status.as_str(), "in_progress" | "closed"))
+    {
+        let agent_name = sanitize_agent_name(&bead.id);
+        let Some(agent) = agents
+            .iter()
+            .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()))
+        else {
+            continue;
+        };
+        let outcome = probe_bead_outcome(repo, &bead.id)?;
+        let worker_active = agent.agent_status == "working";
+        let lane = abacus::Lane {
+            workspace_id: agent.workspace_id.clone(),
+            pane_id: agent.pane_id.clone(),
+            checkout_path: agent.cwd.clone(),
+            branch: format!("lane/{}", bead.id),
+        };
+        let state = record_drain_settle(
+            repo,
+            SettledLane {
+                bead_id: bead.id,
+                lane,
+                outcome,
+                elapsed_secs: 0,
+            },
+            worker_active,
+            report,
+            reported_states,
+        )?;
+        authoring |= state == Some(LaneState::Authoring);
+    }
+    Ok(authoring)
+}
+
+#[derive(serde::Deserialize)]
+struct PullRequestView {
+    state: String,
+    #[serde(rename = "mergedAt")]
+    merged_at: Option<String>,
+    #[serde(rename = "headRefOid", default)]
+    head_ref_oid: Option<String>,
+}
+
+fn parse_pull_request_probe(json: &str) -> Result<PullRequestProbe, String> {
+    let view: PullRequestView = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable `gh pr view` output: {error}"))?;
+    let state = if view.merged_at.is_some() || view.state == "MERGED" {
+        PullRequestState::Merged
+    } else {
+        match view.state.as_str() {
+            "OPEN" => PullRequestState::Open,
+            "CLOSED" => PullRequestState::Closed,
+            other => return Err(format!("unsupported pull request state {other:?}")),
+        }
+    };
+    Ok(PullRequestProbe {
+        state,
+        head_sha: view.head_ref_oid,
+    })
+}
+
+fn is_no_pull_request_error(stderr: &str) -> bool {
+    stderr.contains("no pull requests found")
+        || stderr.contains("Could not resolve to a PullRequest")
+        || stderr.contains("no open pull requests")
+}
+
+fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestProbe>, String> {
+    let (code, stdout, stderr) = capture_status(
+        "gh",
+        &["pr", "view", branch, "--json", "state,mergedAt,headRefOid"],
+        Some(repo),
+    )?;
+    if code == 0 {
+        parse_pull_request_probe(&stdout).map(Some)
+    } else if is_no_pull_request_error(&stderr) {
+        Ok(None)
+    } else {
+        Err(format!(
+            "`gh pr view {branch} --json state,mergedAt,headRefOid` failed ({code}): {}",
+            stderr.trim()
+        ))
+    }
+}
+
+fn record_drain_settle(
+    repo: &Path,
+    settled: SettledLane,
+    worker_active: bool,
+    report: &mut MorningReport,
+    reported_states: &mut BTreeSet<(String, String)>,
+) -> Result<Option<LaneState>, String> {
+    let pull_request = if settled.outcome == abacus::BeadOutcome::Completed {
+        probe_pull_request(repo, &settled.lane.branch)?
+    } else {
+        None
+    };
+
+    if settled.outcome == abacus::BeadOutcome::Completed && pull_request.is_none() {
+        let key = (settled.bead_id.clone(), "completed".to_owned());
+        if reported_states.insert(key) {
+            lane_reap(settled.outcome, &settled.lane)?;
+            report.record_completed(&settled.bead_id, settled.elapsed_secs);
+        }
+        return Ok(None);
+    }
+
+    let state = derive_lane_state(LaneStateInputs {
+        bead_outcome: settled.outcome,
+        worker_active,
+        pull_request: pull_request.as_ref(),
+        verdict_heading_count: 0,
+        latest_adjudication: None,
+    });
+    if state == LaneState::Authoring {
+        return Ok(Some(state));
+    }
+    let key = (settled.bead_id.clone(), format!("{state:?}"));
+    if !reported_states.insert(key) {
+        return Ok(Some(state));
+    }
+    match state {
+        LaneState::Blocked => {
+            lane_reap_blocked(&settled.lane)?;
+        }
+        LaneState::Merged => {
+            lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+        }
+        LaneState::Authoring
+        | LaneState::AwaitingReview
+        | LaneState::ReworkRequested
+        | LaneState::Stalled => {}
+    }
+    report.record_state(state, &settled.bead_id, settled.elapsed_secs);
+    Ok(Some(state))
 }
 
 fn parse_symbolic_default_branch(output: &str) -> Result<String, String> {
@@ -794,7 +1071,7 @@ fn dispatch_cycle(
         .into_iter()
         .filter(|bead| !lost_claims.contains(&bead.id))
         .collect();
-    let Some(bead) = select_bead(&claimable) else {
+    let Some(bead) = select_bead(&claimable).cloned() else {
         return Ok(DispatchCycle::Empty);
     };
     let default_branch = discover_default_branch(repo)?;
@@ -812,19 +1089,23 @@ fn dispatch_cycle(
 
     let agent_name = sanitize_agent_name(&bead.id);
     let lane_started = Instant::now();
-    let lane_result = (|| -> Result<(), String> {
-        let lane = lane_open(repo_str, bead, &agent_name)?;
-        let prompt = lane_prompt(bead, &lane, &default_branch, &agent_name)?;
-        lane_settle(repo, bead, lane_started, &prompt, |outcome| {
-            lane_reap(outcome, &lane)
-        })
+    let lane_result = (|| -> Result<(abacus::Lane, abacus::BeadOutcome), String> {
+        let lane = lane_open(repo_str, &bead, &agent_name)?;
+        let prompt = lane_prompt(&bead, &lane, &default_branch, &agent_name)?;
+        let outcome = lane_settle(repo, &bead, &prompt)?;
+        Ok((lane, outcome))
     })();
 
-    lane_result.map_err(|error| {
+    let (lane, outcome) = lane_result.map_err(|error| {
         let duration = format_lane_duration(lane_started.elapsed().as_secs());
         format!("{error} after {duration}")
     })?;
-    Ok(DispatchCycle::Completed)
+    Ok(DispatchCycle::Settled(SettledLane {
+        bead_id: bead.id,
+        lane,
+        outcome,
+        elapsed_secs: lane_started.elapsed().as_secs(),
+    }))
 }
 
 /// Run a command and capture its exit code, stdout, and stderr without
@@ -852,6 +1133,47 @@ fn capture_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_live_agent_activity_without_treating_presence_as_working() {
+        let json = r#"{"result":{"agents":[
+            {"name":"ab-working","agent_status":"working","cwd":"/repo","workspace_id":"w1","pane_id":"w1:p1"},
+            {"name":"ab-done","agent_status":"done","cwd":"/repo","workspace_id":"w2","pane_id":"w2:p1"},
+            {"agent_status":"idle","cwd":"/repo","workspace_id":"w3","pane_id":"w3:p1"}
+        ]}}"#;
+
+        let agents = parse_agent_list(json).unwrap();
+        assert_eq!(agents.len(), 3);
+        assert_eq!(agents[0].name.as_deref(), Some("ab-working"));
+        assert_eq!(agents[0].agent_status, "working");
+        assert_eq!(agents[1].agent_status, "done");
+        assert!(agents[2].name.is_none());
+        assert!(parse_agent_list("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn pull_request_probe_distinguishes_open_merged_and_absent() {
+        assert_eq!(
+            parse_pull_request_probe(r#"{"state":"OPEN","mergedAt":null,"headRefOid":"head-1"}"#)
+                .unwrap(),
+            PullRequestProbe {
+                state: PullRequestState::Open,
+                head_sha: Some("head-1".into()),
+            }
+        );
+        assert_eq!(
+            parse_pull_request_probe(
+                r#"{"state":"CLOSED","mergedAt":"2026-08-19T10:00:00Z","headRefOid":"head-2"}"#
+            )
+            .unwrap()
+            .state,
+            PullRequestState::Merged
+        );
+        assert!(is_no_pull_request_error(
+            "no pull requests found for branch lane/ab-none"
+        ));
+        assert!(!is_no_pull_request_error("HTTP 502 from github.com"));
+    }
 
     #[test]
     fn capture_status_preserves_non_zero_exit_code_and_output() {
