@@ -214,8 +214,11 @@ pub fn dispatch_prompt(bead_id: &str, branch: &str, default_branch: &str) -> Str
         "You are the worker lane for bead {bead_id}. This pane's working directory is a git \
          worktree on branch {branch}; do all work here. The bead is already claimed to this lane. \
          Run `br show {bead_id}` for your full scope. Write the failing test first, then implement \
-         until it passes, then run the full test suite. Once it passes, commit all work (source \
-         and test changes only), and push with `git push -u origin {branch}`. After the push, run \
+         until it passes. Pin verification to the workspace MSRV: if needed, install it once with \
+         `rustup toolchain install 1.85 --profile minimal --component clippy --component rustfmt`; \
+         then run `RUSTUP_TOOLCHAIN=1.85 cargo test`, `RUSTUP_TOOLCHAIN=1.85 cargo clippy`, and \
+         `RUSTUP_TOOLCHAIN=1.85 cargo fmt --check`. Once they pass, commit all work (source and \
+         test changes only), and push with `git push -u origin {branch}`. After the push, run \
          `gh pr create --base {default_branch}`; use a title containing `{bead_id}` and write your own body \
          summarizing what was done and the test evidence, including suite results and red-first \
          confirmation. If a PR already exists for `{branch}`, treat that existing PR as success \
@@ -390,6 +393,10 @@ mod tests {
         assert!(p.contains("title containing `abacus-v8s`"));
         assert!(p.contains("suite results"));
         assert!(p.contains("red-first confirmation"));
+        assert!(p.contains("rustup toolchain install 1.85"));
+        assert!(p.contains("RUSTUP_TOOLCHAIN=1.85 cargo test"));
+        assert!(p.contains("RUSTUP_TOOLCHAIN=1.85 cargo clippy"));
+        assert!(p.contains("RUSTUP_TOOLCHAIN=1.85 cargo fmt --check"));
         assert!(p.contains("already exists for `lane/abacus-v8s`"));
         assert!(p.contains("treat that existing PR as success"));
         assert!(

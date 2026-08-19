@@ -80,8 +80,12 @@ is blocked).
 
 - A worker lane is a git worktree under `~/.herdr/worktrees/abacus/` on a
   branch named `lane/<bead-id>`. Do all work inside your own lane.
-- Write the failing test first; implement until green; run the full suite
-  (`cargo test`), plus `cargo clippy` and `cargo fmt --check`.
+- Write the failing test first; implement until green. Pin verification to the
+  workspace MSRV (`Cargo.toml` `rust-version`, currently 1.85): if needed,
+  install it once with `rustup toolchain install 1.85 --profile minimal
+  --component clippy --component rustfmt`, then run the full suite
+  (`RUSTUP_TOOLCHAIN=1.85 cargo test`), plus `RUSTUP_TOOLCHAIN=1.85 cargo
+  clippy` and `RUSTUP_TOOLCHAIN=1.85 cargo fmt --check`.
 - Commit and self-push your lane branch: `git push -u origin lane/<bead-id>`.
 - **Worker autonomy ends at the PR.** Workers never merge to `main` or any
   other default branch. In land mode, the engine — never a worker — enqueues
