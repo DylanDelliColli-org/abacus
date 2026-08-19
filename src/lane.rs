@@ -9,9 +9,6 @@ use crate::{
     is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created, should_reap_lane,
 };
 
-// ADR 0005 D8 moves every deployed grammar into the review module when it lands.
-pub(crate) const BLOCKED_COMMENT_TOKEN: &str = "BLOCKED";
-
 /// The live state of a lane, re-derived from substrate probes each cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LaneState {

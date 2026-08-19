@@ -324,6 +324,8 @@ fn drain_records_awaiting_review_and_exits_when_nothing_is_actionable() {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{herdr_calls}'\n\
              if [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"review-workspace\"}},\"root_pane\":{{\"pane_id\":\"review-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/it-review\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"reviewer-workspace\"}},\"root_pane\":{{\"pane_id\":\"reviewer-pane\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                : > '{settled}'\n\
                printf 'worker settled\\n'\n\
@@ -344,7 +346,7 @@ fn drain_records_awaiting_review_and_exits_when_nothing_is_actionable() {
     let fake_gh = fake_bin.join("gh");
     std::fs::write(
         &fake_gh,
-        "#!/bin/sh\nprintf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"abc123\"}'\n",
+        "#!/bin/sh\nif [ \"$5\" = \"number\" ]; then printf '42\\n'; else printf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"abc123\"}'; fi\n",
     )
     .unwrap();
     for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
@@ -415,6 +417,8 @@ fn run_classifies_closed_open_pr_as_awaiting_review_and_keeps_lane_warm() {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{herdr_calls}'\n\
              if [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"run-review-workspace\"}},\"root_pane\":{{\"pane_id\":\"run-review-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/it-run-review\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"run-reviewer-workspace\"}},\"root_pane\":{{\"pane_id\":\"run-reviewer-pane\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                : > '{settled}'\n\
                printf 'worker settled\\n'\n\
@@ -436,7 +440,7 @@ fn run_classifies_closed_open_pr_as_awaiting_review_and_keeps_lane_warm() {
     std::fs::write(
         &fake_gh,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' '{{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"review-head\"}}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$5\" = \"number\" ]; then printf '42\\n'; else printf '%s\\n' '{{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"review-head\"}}'; fi\n",
             gh_calls.display(),
         ),
     )
@@ -625,6 +629,8 @@ fn run_absent_closed_pr_sweep(
             "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\n\
              if [ \"$1 $2\" = \"agent list\" ]; then\n\
                printf '%s\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               printf '%s\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"restart-reviewer-workspace\"}},\"root_pane\":{{\"pane_id\":\"restart-reviewer-pane\"}}}}}}'\n\
              fi\n",
             herdr_calls.display(),
         ),
@@ -635,7 +641,7 @@ fn run_absent_closed_pr_sweep(
     std::fs::write(
         &fake_gh,
         format!(
-            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nprintf '%s\n' '{}'\n",
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nif [ \"$5\" = \"number\" ]; then printf '42\n'; else printf '%s\n' '{}'; fi\n",
             gh_calls.display(),
             pull_request_json,
         ),
@@ -690,14 +696,148 @@ fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
     );
     assert_eq!(
         gh_calls,
-        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
-        "the live open PR is probed exactly once in this settled drain"
+        format!(
+            "pr view lane/{bead_id} --json state,mergedAt,headRefOid\npr view lane/{bead_id} --json number --jq .number\n"
+        ),
+        "the live open PR and its review target number are probed once"
     );
     assert!(
         !herdr_calls
             .lines()
             .any(|call| call.starts_with("worktree remove")),
         "AwaitingReview must remain warm:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
+    let bead_id = "it-review";
+    let workspace = TempDir::new("drain-review-launch");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    std::fs::write(workspace.0.join("AGENTS.md"), "review fixture authority\n").unwrap();
+    let herdr_calls = workspace.0.join("herdr-calls");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               printf '%s\\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
+             elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
+               printf 'fixture claim loss\\n' >&2; exit 1\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"id\":\"{bead_id}\",\"status\":\"closed\",\"description\":\"Review the target implementation.\",\"comments\":[{{\"id\":1,\"text\":\"Preserve the authority trail.\"}}]}}]\\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"review-workspace\"}},\"root_pane\":{{\"pane_id\":\"review-pane\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent start\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               if [ ! -f \"$4\" ]; then printf 'missing brief: %s\\n' \"$4\" >&2; exit 3; fi\n\
+               printf 'reviewer settled\\n'\n\
+             else\n\
+               printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+            calls = herdr_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"state,mergedAt,headRefOid\" ]; then\n  printf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"review-head\"}'\nelif [ \"$1 $2 $3\" = \"pr view lane/it-review\" ] && [ \"$5\" = \"number\" ]; then\n  printf '42\\n'\nelse\n  printf 'unexpected gh call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+    )
+    .unwrap();
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = std::fs::read_to_string(herdr_calls).unwrap();
+    let workspace_creates: Vec<_> = calls
+        .lines()
+        .filter(|call| call.starts_with("workspace create"))
+        .collect();
+    assert_eq!(workspace_creates.len(), 1, "Herdr calls:\n{calls}");
+    assert!(
+        workspace_creates[0].contains(&format!("--cwd {}", workspace.0.display()))
+            && workspace_creates[0].contains("--no-focus"),
+        "reviewer did not get a dedicated workspace on the main checkout: {calls}"
+    );
+    assert!(
+        !calls
+            .lines()
+            .any(|call| call.starts_with("worktree create")),
+        "review launch must not create a worktree:\n{calls}"
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("agent start rev-it-review-c1"))
+            .count(),
+        1,
+        "reviewer must start once:\n{calls}"
+    );
+    assert!(
+        calls.contains("agent start rev-it-review-c1 --kind codex --pane review-pane"),
+        "reviewer start lacked the codex kind or dedicated pane: {calls}"
+    );
+    let prompts: Vec<_> = calls
+        .lines()
+        .filter(|call| call.starts_with("agent prompt rev-it-review-c1"))
+        .collect();
+    assert_eq!(prompts.len(), 1, "reviewer must be prompted once:\n{calls}");
+    let prompt_parts: Vec<_> = prompts[0].split_whitespace().collect();
+    assert_eq!(prompt_parts.last(), Some(&"--wait"));
+    let brief = Path::new(prompt_parts[3]);
+    assert!(
+        brief.exists(),
+        "review prompt path did not exist: {}",
+        brief.display()
+    );
+    assert!(brief.starts_with(workspace.0.join("target/abacus-tmp/reviews")));
+    assert!(
+        !calls.contains("agent wait --until idle"),
+        "the measured-broken wait form reappeared:\n{calls}"
     );
 }
 

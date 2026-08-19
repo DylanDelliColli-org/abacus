@@ -24,6 +24,7 @@ use abacus::lane::{
 };
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
+use abacus::review::{BLOCKED_COMMENT_TOKEN, launch_reviewer, parse_review_bead};
 use abacus::{
     format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
     version_string,
@@ -725,6 +726,7 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     Ok(0)
                 }
                 Some(LaneState::AwaitingReview) => {
+                    launch_awaiting_reviewer(&repo, &settled, 1)?;
                     println!(
                         "bead {} lane is awaiting-review after {}; leaving it warm",
                         settled.bead_id,
@@ -744,8 +746,9 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                 Some(LaneState::Blocked) => {
                     lane_reap_blocked(&settled.lane)?;
                     eprintln!(
-                        "bead {} is in_progress; worker reported BLOCKED after {}",
+                        "bead {} is in_progress; worker reported {} after {}",
                         settled.bead_id,
+                        BLOCKED_COMMENT_TOKEN,
                         format_lane_duration(settled.elapsed_secs)
                     );
                     Ok(3)
@@ -1034,13 +1037,41 @@ fn record_drain_settle(
                 lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
             }
         }
-        LaneState::Authoring
-        | LaneState::AwaitingReview
-        | LaneState::ReworkRequested
-        | LaneState::Stalled => {}
+        LaneState::AwaitingReview => {
+            launch_awaiting_reviewer(repo, &settled, 1)?;
+        }
+        LaneState::Authoring | LaneState::ReworkRequested | LaneState::Stalled => {}
     }
     report.record_state(state, &settled.bead_id, settled.elapsed_secs);
     Ok(Some(state))
+}
+
+fn probe_pull_request_number(repo: &Path, branch: &str) -> Result<u64, String> {
+    let number = capture(
+        "gh",
+        &["pr", "view", branch, "--json", "number", "--jq", ".number"],
+        Some(repo),
+    )?;
+    number.trim().parse::<u64>().map_err(|error| {
+        format!(
+            "unexpected PR number for {branch}: {:?}: {error}",
+            number.trim()
+        )
+    })
+}
+
+fn launch_awaiting_reviewer(repo: &Path, settled: &SettledLane, cycle: u32) -> Result<(), String> {
+    let bead_json = capture("br", &["show", &settled.bead_id, "--json"], Some(repo))?;
+    let review_bead = parse_review_bead(&bead_json)?;
+    let pr_number = probe_pull_request_number(repo, &settled.lane.branch)?;
+    let brief = launch_reviewer(repo, &settled.bead_id, &review_bead, pr_number, cycle)?;
+    println!(
+        "adversarial reviewer launched for {} cycle {} with brief {}",
+        settled.bead_id,
+        cycle,
+        brief.display()
+    );
+    Ok(())
 }
 
 /// Derive the shared lane state for a settled worker. A completed bead with no
