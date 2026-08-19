@@ -6,6 +6,7 @@ pub mod lane;
 pub mod review;
 
 use serde::Deserialize;
+use std::path::Path;
 
 pub const OPERATOR_SEAT_LABEL: &str = "seat:operator";
 
@@ -206,16 +207,62 @@ pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
     })
 }
 
+/// Read the Rust MSRV declared by a target repository, if it has one.
+pub fn target_rust_version(repo: &Path) -> Result<Option<String>, String> {
+    let manifest_path = repo.join("Cargo.toml");
+    let manifest = match std::fs::read_to_string(&manifest_path) {
+        Ok(manifest) => manifest,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read target manifest {}: {error}",
+                manifest_path.display()
+            ));
+        }
+    };
+
+    Ok(manifest.lines().find_map(|line| {
+        let (key, value) = line.trim().split_once('=')?;
+        if key.trim() != "rust-version" {
+            return None;
+        }
+        let value = value.trim();
+        value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .map(str::to_owned)
+    }))
+}
+
 /// The dispatch prompt is the bead's identity carriage (measured finding 3,
 /// SHIFT-REPORT-2026-08-13 §7): a context-lost worker must be able to find
-/// its own bead and branch from the prompt alone.
-pub fn dispatch_prompt(bead_id: &str, branch: &str, default_branch: &str) -> String {
+/// its own bead and branch from the prompt alone. Target-specific manifest
+/// discovery happens outside this pure builder.
+pub fn dispatch_prompt(
+    bead_id: &str,
+    branch: &str,
+    default_branch: &str,
+    rust_version: Option<&str>,
+) -> String {
+    let verification = rust_version.map_or_else(
+        || "Then run the full test suite.".to_owned(),
+        |version| {
+            format!(
+                "Pin verification to the target workspace MSRV: if needed, install it once with \
+                 `rustup toolchain install {version} --profile minimal --component clippy --component rustfmt`; \
+                 then run the full test suite with `RUSTUP_TOOLCHAIN={version} cargo test`, \
+                 `RUSTUP_TOOLCHAIN={version} cargo clippy --all-targets --all-features -- -D warnings`, \
+                 and `RUSTUP_TOOLCHAIN={version} cargo fmt --check`."
+            )
+        },
+    );
+
     format!(
         "You are the worker lane for bead {bead_id}. This pane's working directory is a git \
          worktree on branch {branch}; do all work here. The bead is already claimed to this lane. \
          Run `br show {bead_id}` for your full scope. Write the failing test first, then implement \
-         until it passes, then run the full test suite. Once it passes, commit all work (source \
-         and test changes only), and push with `git push -u origin {branch}`. After the push, run \
+         until it passes. {verification} Once verification passes, commit all work (source and test \
+         changes only), and push with `git push -u origin {branch}`. After the push, run \
          `gh pr create --base {default_branch}`; use a title containing `{bead_id}` and write your own body \
          summarizing what was done and the test evidence, including suite results and red-first \
          confirmation. If a PR already exists for `{branch}`, treat that existing PR as success \
@@ -229,6 +276,46 @@ pub fn dispatch_prompt(bead_id: &str, branch: &str, default_branch: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PROMPT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct PromptFixture(PathBuf);
+
+    impl PromptFixture {
+        fn new(rust_version: Option<&str>) -> Self {
+            let sequence = NEXT_PROMPT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "abacus-prompt-fixture-{}-{sequence}",
+                std::process::id()
+            ));
+            std::fs::create_dir(&path).unwrap();
+            let fixture = Self(path);
+            if let Some(version) = rust_version {
+                fixture.write_manifest(version);
+            }
+            fixture
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn write_manifest(&self, rust_version: &str) {
+            std::fs::write(
+                self.path().join("Cargo.toml"),
+                format!("[package]\nname = \"target-fixture\"\nversion = \"0.0.0\"\nrust-version = \"{rust_version}\"\n"),
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for PromptFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn version_string_matches_cargo_package_version() {
@@ -379,7 +466,7 @@ mod tests {
 
     #[test]
     fn dispatch_prompt_carries_bead_identity_and_protocol() {
-        let p = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main");
+        let p = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main", None);
         assert!(p.contains("abacus-v8s"));
         assert!(p.contains("lane/abacus-v8s"));
         assert!(p.contains("br show abacus-v8s"));
@@ -410,8 +497,66 @@ mod tests {
             "close must be the final act after the PR exists: {p}"
         );
 
-        let develop = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "develop");
+        let develop = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "develop", None);
         assert!(develop.contains("gh pr create --base develop"));
+    }
+
+    #[test]
+    fn prompt_pins_verification_to_the_target_manifest_msrv() {
+        let target = PromptFixture::new(Some("1.82"));
+        let target_msrv = target_rust_version(target.path()).unwrap().unwrap();
+        let p = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main", Some(&target_msrv));
+
+        for expected in [
+            format!("rustup toolchain install {target_msrv}"),
+            format!("RUSTUP_TOOLCHAIN={target_msrv} cargo test"),
+            format!(
+                "RUSTUP_TOOLCHAIN={target_msrv} cargo clippy --all-targets --all-features -- -D warnings"
+            ),
+            format!("RUSTUP_TOOLCHAIN={target_msrv} cargo fmt --check"),
+        ] {
+            assert!(p.contains(&expected), "missing {expected:?} in: {p}");
+        }
+    }
+
+    #[test]
+    fn prompt_omits_rust_commands_without_a_manifest() {
+        let target = PromptFixture::new(None);
+        assert!(!target.path().join("Cargo.toml").exists());
+        let target_msrv = target_rust_version(target.path()).unwrap();
+        let p = dispatch_prompt(
+            "abacus-v8s",
+            "lane/abacus-v8s",
+            "main",
+            target_msrv.as_deref(),
+        );
+
+        assert!(
+            !p.contains("rustup"),
+            "non-Rust prompt contained rustup: {p}"
+        );
+        assert!(!p.contains("cargo"), "non-Rust prompt contained cargo: {p}");
+        assert!(p.contains("Write the failing test first"));
+        assert!(p.contains("run the full test suite"));
+        assert!(p.contains("git push -u origin lane/abacus-v8s"));
+        assert!(p.contains("gh pr create --base main"));
+        assert!(p.contains("br close abacus-v8s"));
+    }
+
+    #[test]
+    fn changing_target_manifest_msrv_changes_the_generated_prompt() {
+        let target = PromptFixture::new(Some("1.82"));
+        let first_msrv = target_rust_version(target.path()).unwrap().unwrap();
+        let first = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main", Some(&first_msrv));
+
+        target.write_manifest("1.83");
+        let second_msrv = target_rust_version(target.path()).unwrap().unwrap();
+        let second = dispatch_prompt("abacus-v8s", "lane/abacus-v8s", "main", Some(&second_msrv));
+        assert_ne!(first_msrv, second_msrv);
+        assert_ne!(
+            first, second,
+            "target manifest change must change the prompt"
+        );
     }
 
     #[test]
