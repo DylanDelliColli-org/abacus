@@ -785,9 +785,18 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
     let mut lost_claims = BTreeSet::new();
     let mut report = MorningReport::default();
     let mut reported_states = BTreeSet::new();
+    // Invocation-local only: restart must re-derive durable closed-lane facts.
+    // Within a run, no-PR and Merged results are terminal; OPEN stays live so
+    // a later sweep can observe its merge.
+    let mut absorbed_closed_beads = BTreeSet::new();
 
     loop {
-        if sweep_live_lanes(&repo, &mut report, &mut reported_states)? {
+        if sweep_live_lanes(
+            &repo,
+            &mut report,
+            &mut reported_states,
+            &mut absorbed_closed_beads,
+        )? {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
@@ -874,6 +883,7 @@ fn sweep_live_lanes(
     repo: &Path,
     report: &mut MorningReport,
     reported_states: &mut BTreeSet<(String, String)>,
+    absorbed_closed_beads: &mut BTreeSet<String>,
 ) -> Result<bool, String> {
     let agents = parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?;
     let agents: Vec<_> = agents
@@ -882,15 +892,13 @@ fn sweep_live_lanes(
         .collect();
     let beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
     let mut authoring = false;
-    for bead in beads.into_iter().filter(|bead| {
-        bead.status == "in_progress"
-            || (bead.status == "closed" && {
-                let agent_name = sanitize_agent_name(&bead.id);
-                agents
-                    .iter()
-                    .any(|agent| agent.name.as_deref() == Some(agent_name.as_str()))
-            })
-    }) {
+    for bead in beads {
+        if bead.status != "in_progress"
+            && (bead.status != "closed" || absorbed_closed_beads.contains(&bead.id))
+        {
+            continue;
+        }
+        let bead_is_closed = bead.status == "closed";
         let agent_name = sanitize_agent_name(&bead.id);
         let agent = agents
             .iter()
@@ -912,10 +920,11 @@ fn sweep_live_lanes(
             },
         );
         let lane_available = agent.is_some();
+        let bead_id = bead.id;
         let state = record_drain_settle(
             repo,
             SettledLane {
-                bead_id: bead.id,
+                bead_id: bead_id.clone(),
                 lane,
                 lane_available,
                 outcome,
@@ -925,6 +934,9 @@ fn sweep_live_lanes(
             report,
             reported_states,
         )?;
+        if bead_is_closed && matches!(state, None | Some(LaneState::Merged)) {
+            absorbed_closed_beads.insert(bead_id);
+        }
         authoring |= state == Some(LaneState::Authoring);
     }
     Ok(authoring)

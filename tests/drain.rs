@@ -571,6 +571,159 @@ fn restart_sweep_reports_absent_in_progress_agent_as_stalled_and_continues() {
     );
 }
 
+fn run_absent_closed_pr_sweep(
+    tag: &str,
+    bead_id: &str,
+    pull_request_json: &str,
+    force_resweep: bool,
+) -> (std::process::Output, String, String) {
+    let workspace = TempDir::new(tag);
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
+    let ready_json = if force_resweep {
+        r#"[{"id":"it-lost","title":"lost claim","priority":0,"labels":[]}]"#
+    } else {
+        "[]"
+    };
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               printf '%s\n' '{ready_json}'\n\
+             elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
+               printf 'fixture claim loss\n' >&2; exit 1\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"status\":\"closed\"}}]\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             fi\n",
+            herdr_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\nprintf '%s\n' '{}'\n",
+            gh_calls.display(),
+            pull_request_json,
+        ),
+    )
+    .unwrap();
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else exit 2; fi\n",
+    )
+    .unwrap();
+    std::fs::write(&gh_calls, "").unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    (
+        output,
+        std::fs::read_to_string(herdr_calls).unwrap(),
+        std::fs::read_to_string(gh_calls).unwrap(),
+    )
+}
+
+#[test]
+fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
+    let bead_id = "it-closed-review";
+    let (output, herdr_calls, gh_calls) = run_absent_closed_pr_sweep(
+        "restart-closed-review",
+        bead_id,
+        r#"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head"}"#,
+        false,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("awaiting-review: 1 [it-closed-review"),
+        "restart failed to reconstruct the absent closed lane as AwaitingReview: {stdout}"
+    );
+    assert_eq!(
+        gh_calls,
+        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
+        "the live open PR is probed exactly once in this settled drain"
+    );
+    assert!(
+        !herdr_calls
+            .lines()
+            .any(|call| call.starts_with("worktree remove")),
+        "AwaitingReview must remain warm:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn restart_sweep_reports_absent_closed_merged_pr_as_merged() {
+    let bead_id = "it-closed-merged";
+    let (output, herdr_calls, gh_calls) = run_absent_closed_pr_sweep(
+        "restart-closed-merged",
+        bead_id,
+        r#"{"state":"MERGED","mergedAt":"2026-08-19T18:00:00Z","headRefOid":"merged-head"}"#,
+        true,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("merged: 1 [it-closed-merged"),
+        "restart failed to reconstruct the absent closed lane as Merged: {stdout}"
+    );
+    assert_eq!(
+        gh_calls,
+        format!("pr view lane/{bead_id} --json state,mergedAt,headRefOid\n"),
+        "Merged becomes absorbing after its first handled probe"
+    );
+    assert!(
+        !herdr_calls
+            .lines()
+            .any(|call| call.starts_with("worktree remove")),
+        "there is no recorded workspace to reap:\n{herdr_calls}"
+    );
+}
+
 #[test]
 fn a_dirty_blocked_lane_is_left_standing_and_reported() {
     let workspace = TempDir::new("drain-dirty-blocked");
