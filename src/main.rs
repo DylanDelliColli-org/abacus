@@ -1272,6 +1272,41 @@ struct PullRequestObservation {
     review_facts: ReviewCommentFacts,
 }
 
+const MERGE_QUEUE_HEAD_QUERY: &str = r#"query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{headCommit{oid}}}}}"#;
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadEnvelope {
+    data: MergeQueueHeadData,
+}
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadData {
+    repository: Option<MergeQueueHeadRepository>,
+}
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadRepository {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<MergeQueueHeadPullRequest>,
+}
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadPullRequest {
+    #[serde(rename = "mergeQueueEntry")]
+    merge_queue_entry: Option<MergeQueueHeadEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadEntry {
+    #[serde(rename = "headCommit")]
+    head_commit: MergeQueueHeadCommit,
+}
+
+#[derive(serde::Deserialize)]
+struct MergeQueueHeadCommit {
+    oid: String,
+}
+
 struct SettledLaneObservation {
     state: Option<LaneState>,
     pull_request: Option<PullRequestObservation>,
@@ -1309,6 +1344,69 @@ fn parse_pull_request_probe(json: &str) -> Result<PullRequestObservation, String
         number: view.number,
         review_facts: review_comment_facts(&comments)?,
     })
+}
+
+fn parse_merge_queue_head(json: &str) -> Result<Option<String>, String> {
+    let envelope: MergeQueueHeadEnvelope = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable GitHub merge-queue payload: {error}"))?;
+    let head = envelope
+        .data
+        .repository
+        .and_then(|repository| repository.pull_request)
+        .and_then(|pull_request| pull_request.merge_queue_entry)
+        .map(|entry| entry.head_commit.oid);
+    match head {
+        Some(head) if head.trim().is_empty() => {
+            Err("GitHub merge-queue payload has an empty head commit OID".into())
+        }
+        head => Ok(head),
+    }
+}
+
+fn probe_merge_queue_head(repo: &Path, pull_request_number: u64) -> Result<Option<String>, String> {
+    let name_with_owner = capture(
+        "gh",
+        &[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ],
+        Some(repo),
+    )?;
+    let name_with_owner = name_with_owner.trim();
+    let (owner, name) = name_with_owner
+        .split_once('/')
+        .ok_or_else(|| format!("unexpected GitHub repository name {name_with_owner:?}"))?;
+    if owner.is_empty() || name.is_empty() {
+        return Err(format!(
+            "unexpected GitHub repository name {name_with_owner:?}"
+        ));
+    }
+
+    let query_arg = format!("query={MERGE_QUEUE_HEAD_QUERY}");
+    let owner_arg = format!("owner={owner}");
+    let name_arg = format!("name={name}");
+    let number_arg = format!("number={pull_request_number}");
+    let output = capture(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &query_arg,
+            "-F",
+            &owner_arg,
+            "-F",
+            &name_arg,
+            "-F",
+            &number_arg,
+        ],
+        Some(repo),
+    )?;
+    parse_merge_queue_head(&output)
 }
 
 fn is_no_pull_request_error(stderr: &str) -> bool {
@@ -1504,6 +1602,25 @@ fn post_commit_status(repo: &Path, head_sha: &str, state: CommitStatusState) -> 
     Ok(())
 }
 
+fn reconcile_one_commit_status(
+    repo: &Path,
+    head_sha: &str,
+    desired: CommitStatusState,
+) -> Result<(), String> {
+    let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{head_sha}/status");
+    let combined = capture("gh", &["api", &endpoint], Some(repo))?;
+    let posted = parse_combined_status(&combined)?;
+    let already_posted = matches!(
+        (desired, posted),
+        (CommitStatusState::Pending, PostedReviewStatus::Pending)
+            | (CommitStatusState::Success, PostedReviewStatus::Success)
+    );
+    if !already_posted {
+        post_commit_status(repo, head_sha, desired)?;
+    }
+    Ok(())
+}
+
 fn latest_reviewed_adjudication(facts: &ReviewCommentFacts) -> Option<&Adjudication> {
     facts
         .latest_adjudication
@@ -1545,16 +1662,14 @@ fn reconcile_commit_status(
         return Ok(());
     };
 
-    let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{head_sha}/status");
-    let combined = capture("gh", &["api", &endpoint], Some(repo))?;
-    let posted = parse_combined_status(&combined)?;
-    let already_posted = matches!(
-        (desired, posted),
-        (CommitStatusState::Pending, PostedReviewStatus::Pending)
-            | (CommitStatusState::Success, PostedReviewStatus::Success)
-    );
-    if !already_posted {
-        post_commit_status(repo, head_sha, desired)?;
+    reconcile_one_commit_status(repo, head_sha, desired)?;
+    if accepted_current_head {
+        let pull_request_number = pull_request
+            .number
+            .ok_or_else(|| "accepted pull request observation is missing its number".to_owned())?;
+        if let Some(merge_queue_head) = probe_merge_queue_head(repo, pull_request_number)? {
+            reconcile_one_commit_status(repo, &merge_queue_head, CommitStatusState::Success)?;
+        }
     }
     Ok(())
 }
@@ -2104,6 +2219,26 @@ mod tests {
             "none of the git remotes configured for this repository point to a known GitHub host"
         ));
         assert!(!is_no_pull_request_error("HTTP 502 from github.com"));
+    }
+
+    #[test]
+    fn merge_queue_head_parser_returns_only_an_active_entry_commit() {
+        assert_eq!(
+            parse_merge_queue_head(
+                r#"{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"headCommit":{"oid":"merge-group-head"}}}}}}"#
+            )
+            .unwrap()
+            .as_deref(),
+            Some("merge-group-head")
+        );
+        assert_eq!(
+            parse_merge_queue_head(
+                r#"{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}"#
+            )
+            .unwrap(),
+            None
+        );
+        assert!(parse_merge_queue_head("not json").is_err());
     }
 
     #[test]

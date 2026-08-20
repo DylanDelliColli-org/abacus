@@ -2094,8 +2094,16 @@ if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
 elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/review-head/status" ]; then
   if [ -f '{posted_status}' ]; then IFS= read -r state < '{posted_status}'; printf '{{"state":"%s","statuses":[{{"state":"%s","context":"adversarial-review"}}],"total_count":1}}\n' "$state" "$state"
   else printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'; fi
+elif [ "$1 $2" = "repo view" ]; then
+  printf 'owner/repo\n'
+elif [ "$1 $2" = "api graphql" ]; then
+  printf '%s\n' '{{"data":{{"repository":{{"pullRequest":{{"mergeQueueEntry":{{"headCommit":{{"oid":"merge-group-head"}}}}}}}}}}}}'
+elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/merge-group-head/status" ]; then
+  printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'
 elif [ "$1 $2" = "api --method" ] && [ "$3" = "POST" ] && [ "$4" = "repos/{{owner}}/{{repo}}/statuses/review-head" ]; then
   if [ "$6" = "state=pending" ] || [ "$6" = "state=success" ]; then printf '%s\n' "${{6#state=}}" > '{posted_status}'; else printf 'missing status state: %s\n' "$*" >&2; exit 2; fi
+elif [ "$1 $2" = "api --method" ] && [ "$3" = "POST" ] && [ "$4" = "repos/{{owner}}/{{repo}}/statuses/merge-group-head" ]; then
+  exit 0
 else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
 "####,
             calls = gh_calls.display(),
@@ -2160,6 +2168,26 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
             .count(),
         1,
         "pending must be posted exactly once:\n{gh_calls}"
+    );
+    assert_eq!(
+        gh_calls
+            .lines()
+            .filter(|call| call.contains("api graphql") && call.contains("mergeQueueEntry"))
+            .count(),
+        1,
+        "the accepted PR's merge-queue entry must be queried exactly once:\n{gh_calls}"
+    );
+    assert_eq!(
+        gh_calls
+            .lines()
+            .filter(|call| {
+                call.contains("api --method POST repos/{owner}/{repo}/statuses/merge-group-head")
+                    && call.contains("state=success")
+                    && call.contains("context=adversarial-review")
+            })
+            .count(),
+        1,
+        "the merge-group commit must receive the accepted review status exactly once:\n{gh_calls}"
     );
     for forbidden in ["state=failure", "rulesets", "/protection"] {
         assert!(
