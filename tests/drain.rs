@@ -1019,6 +1019,41 @@ fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
 }
 
 #[test]
+fn malformed_authorized_adjudication_warns_once_and_drain_continues() {
+    let bead_id = "it-malformed-adjudication";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED because rework is required.\n\nAdjudicated head: review-head","author":{"login":"DylanDelliColli"},"authorAssociation":"OWNER"}]}"####;
+    let (output, _herdr_calls, _gh_calls) = run_absent_closed_pr_sweep(
+        "malformed-authorized-adjudication",
+        bead_id,
+        pull_request,
+        true,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the malformed adjudication changed lane classification: {stdout}"
+    );
+    assert!(
+        stderr.contains("PR #42 comment 1")
+            && stderr.contains("adjudication is missing its fixed verdict line"),
+        "the warning did not identify the repair target and parser failure: {stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("ignored malformed authorized adjudication")
+            .count(),
+        1,
+        "the same durable malformed comment warned more than once: {stderr}"
+    );
+}
+
+#[test]
 fn member_rework_on_the_reviewed_head_launches_cycle_two_after_the_head_moves() {
     let bead_id = "it-member-reworked";
     let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"reworked-head","number":37,"comments":[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"NONE"},{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::next_reviewer_cycle): ACCEPTED. Launch cycle 2 after the author moves the head.\n\nAdjudicated head: reviewed-head","author":{"login":"DylanDelliColli"},"authorAssociation":"MEMBER"}]}"####;

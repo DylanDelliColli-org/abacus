@@ -77,6 +77,14 @@ pub enum ParsedReviewComment {
 pub struct ReviewCommentFacts {
     pub verdict_cycles: Vec<u32>,
     pub latest_adjudication: Option<Adjudication>,
+    pub malformed_adjudications: Vec<MalformedAdjudication>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalformedAdjudication {
+    pub comment_number: usize,
+    pub heading: String,
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +203,7 @@ fn is_authorized_adjudicator(comment: ReviewComment<'_>) -> bool {
 
 pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewCommentFacts, String> {
     let mut facts = ReviewCommentFacts::default();
-    for comment in comments {
+    for (comment_index, comment) in comments.iter().enumerate() {
         if let Some(first_line) = comment.body.lines().next() {
             if let Some(cycle) = heading_cycle(first_line, VERDICT_HEADING_PREFIX) {
                 facts.verdict_cycles.push(cycle);
@@ -204,14 +212,24 @@ pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewComm
         if !is_authorized_adjudicator(*comment) {
             continue;
         }
-        if let ParsedReviewComment::Adjudication(adjudication) = parse_review_comment(comment.body)?
-        {
-            if facts
-                .latest_adjudication
-                .as_ref()
-                .is_none_or(|latest| adjudication.cycle > latest.cycle)
-            {
-                facts.latest_adjudication = Some(adjudication);
+        match parse_review_comment(comment.body) {
+            Ok(ParsedReviewComment::Adjudication(adjudication)) => {
+                if facts
+                    .latest_adjudication
+                    .as_ref()
+                    .is_none_or(|latest| adjudication.cycle > latest.cycle)
+                {
+                    facts.latest_adjudication = Some(adjudication);
+                }
+            }
+            Ok(ParsedReviewComment::NotAdjudication) => {}
+            Err(error) => {
+                let heading = comment.body.lines().next().unwrap_or_default();
+                facts.malformed_adjudications.push(MalformedAdjudication {
+                    comment_number: comment_index + 1,
+                    heading: heading.to_owned(),
+                    error,
+                });
             }
         }
     }
@@ -815,6 +833,28 @@ mod tests {
         assert_eq!(
             facts.latest_adjudication.unwrap().verdict,
             AdjudicationVerdict::Accepted
+        );
+    }
+
+    #[test]
+    fn authorized_malformed_adjudication_is_inert_instead_of_an_error() {
+        let facts = review_comment_facts(&[ReviewComment {
+            body: "## Adjudication — cycle 1\n\nVerdict accepted: REFUTED because rework is required.\n\nAdjudicated head: review-head",
+            author_login: "DylanDelliColli",
+            author_association: "OWNER",
+        }])
+        .expect("a malformed authorized adjudication must not abort comment classification");
+
+        assert_eq!(facts.latest_adjudication, None);
+        assert_eq!(facts.malformed_adjudications.len(), 1);
+        assert_eq!(facts.malformed_adjudications[0].comment_number, 1);
+        assert_eq!(
+            facts.malformed_adjudications[0].heading,
+            "## Adjudication — cycle 1"
+        );
+        assert_eq!(
+            facts.malformed_adjudications[0].error,
+            "adjudication is missing its fixed verdict line"
         );
     }
 

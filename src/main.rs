@@ -1354,6 +1354,23 @@ fn record_drain_settle(
     reported_states: &mut BTreeSet<(String, String)>,
 ) -> Result<Option<LaneState>, String> {
     let observation = derive_settled_lane_state(repo, &settled, worker_active)?;
+    if let Some(pull_request) = observation.pull_request.as_ref() {
+        for malformed in &pull_request.review_facts.malformed_adjudications {
+            let warning_key = format!(
+                "malformed-adjudication:{}:{}:{}",
+                malformed.comment_number, malformed.heading, malformed.error
+            );
+            if reported_states.insert((settled.bead_id.clone(), warning_key)) {
+                let pr = pull_request
+                    .number
+                    .map_or_else(|| "unknown".to_owned(), |number| format!("#{number}"));
+                eprintln!(
+                    "WARNING: ignored malformed authorized adjudication on PR {pr} comment {} ({:?}): {}",
+                    malformed.comment_number, malformed.heading, malformed.error
+                );
+            }
+        }
+    }
     let state = observation.state;
     if !settled.lane_available
         && matches!(
@@ -1913,6 +1930,7 @@ mod tests {
         let mut facts = ReviewCommentFacts {
             verdict_cycles: Vec::new(),
             latest_adjudication: Some(adjudication),
+            malformed_adjudications: Vec::new(),
         };
 
         assert_eq!(latest_reviewed_adjudication(&facts), None);
