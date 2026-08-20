@@ -2032,6 +2032,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
                if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                elif [ \"$current_phase\" = \"2\" ]; then printf '[{{\"id\":\"it-phase-2\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                elif [ \"$current_phase\" = \"3\" ]; then printf '[{{\"id\":\"it-phase-3\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
+               elif [ \"$current_phase\" = \"4\" ]; then printf '[{{\"id\":\"it-phase-4\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                else printf '[]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-phase-1 --claim\" ]; then\n\
                printf '2\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
@@ -2039,6 +2040,8 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
                printf '3\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
              elif [ \"$1 $2 $3\" = \"update it-phase-3 --claim\" ]; then\n\
                printf '4\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
+             elif [ \"$1 $2 $3\" = \"update it-phase-4 --claim\" ]; then\n\
+               printf '5\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
                printf '[{{\"id\":\"{bead_id}\",\"status\":\"closed\",\"description\":\"Review fixture.\",\"comments\":[]}}]\\n'\n\
              else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
@@ -2097,7 +2100,8 @@ elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/review-head/
 elif [ "$1 $2" = "repo view" ]; then
   printf 'owner/repo\n'
 elif [ "$1 $2" = "api graphql" ]; then
-  printf '%s\n' '{{"data":{{"repository":{{"pullRequest":{{"mergeQueueEntry":{{"headCommit":{{"oid":"merge-group-head"}}}}}}}}}}}}'
+  if [ "$current_phase" = "4" ]; then printf '%s\n' '{{"data":{{"repository":{{"pullRequest":{{"mergeQueueEntry":{{"headCommit":null}}}}}}}}}}'
+  else printf '%s\n' '{{"data":{{"repository":{{"pullRequest":{{"mergeQueueEntry":{{"headCommit":{{"oid":"merge-group-head"}}}}}}}}}}}}'; fi
 elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/merge-group-head/status" ]; then
   printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'
 elif [ "$1 $2" = "api --method" ] && [ "$3" = "POST" ] && [ "$4" = "repos/{{owner}}/{{repo}}/statuses/review-head" ]; then
@@ -2151,8 +2155,8 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
             .lines()
             .filter(|call| call == &"api repos/{owner}/{repo}/commits/review-head/status")
             .count(),
-        3,
-        "both forged rulings must leave phase 2 AwaitingReview; only the authorized rework phase skips the status probe:\n{gh_calls}"
+        4,
+        "both forged rulings must leave phase 2 AwaitingReview; only the authorized rework phase skips the status probe, and both accepted sweeps reconcile it:\n{gh_calls}"
     );
     let status_posts: Vec<_> = gh_calls
         .lines()
@@ -2174,8 +2178,8 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
             .lines()
             .filter(|call| call.contains("api graphql") && call.contains("mergeQueueEntry"))
             .count(),
-        1,
-        "the accepted PR's merge-queue entry must be queried exactly once:\n{gh_calls}"
+        2,
+        "the accepted PR's nullable then assigned merge-queue head must be queried once per sweep:\n{gh_calls}"
     );
     assert_eq!(
         gh_calls

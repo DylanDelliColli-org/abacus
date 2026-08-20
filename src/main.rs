@@ -1299,7 +1299,7 @@ struct MergeQueueHeadPullRequest {
 #[derive(serde::Deserialize)]
 struct MergeQueueHeadEntry {
     #[serde(rename = "headCommit")]
-    head_commit: MergeQueueHeadCommit,
+    head_commit: Option<MergeQueueHeadCommit>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1354,7 +1354,8 @@ fn parse_merge_queue_head(json: &str) -> Result<Option<String>, String> {
         .repository
         .and_then(|repository| repository.pull_request)
         .and_then(|pull_request| pull_request.merge_queue_entry)
-        .map(|entry| entry.head_commit.oid);
+        .and_then(|entry| entry.head_commit)
+        .map(|head_commit| head_commit.oid);
     match head {
         Some(head) if head.trim().is_empty() => {
             Err("GitHub merge-queue payload has an empty head commit OID".into())
@@ -2234,6 +2235,13 @@ mod tests {
         assert_eq!(
             parse_merge_queue_head(
                 r#"{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}"#
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_merge_queue_head(
+                r#"{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"headCommit":null}}}}}"#
             )
             .unwrap(),
             None
