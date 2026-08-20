@@ -301,7 +301,7 @@ fn current_codex_context_percent(pane: &str) -> Option<u8> {
 }
 
 fn should_nudge_after_settle(baseline_context: Option<u8>, pane: &str) -> bool {
-    baseline_context.is_some() && current_codex_context_percent(pane) == baseline_context
+    baseline_context.is_none() || current_codex_context_percent(pane) == baseline_context
 }
 
 fn pasted_composer_is_visible(pane: &str) -> bool {
@@ -794,6 +794,18 @@ mod tests {
         assert!(should_nudge_after_settle(
             Some(24),
             "› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24% used\n"
+        ));
+    }
+
+    #[test]
+    fn unavailable_baseline_fails_toward_recovery() {
+        assert!(should_nudge_after_settle(
+            None,
+            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n"
+        ));
+        assert!(should_nudge_after_settle(
+            None,
+            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
         ));
     }
 

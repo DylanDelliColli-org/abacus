@@ -1645,6 +1645,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
     let probe_attempts = ws.0.join("probe-attempts");
     let prompt_settled = ws.0.join("prompt-settled");
     let failed_probe = ws.0.join("failed-probe");
+    let first_pane_read = ws.0.join("first-pane-read");
     let lane_json = serde_json::json!({
         "result": {
             "type": "worktree_created",
@@ -1691,6 +1692,13 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
                  br close '{}'\n\
                fi\n\
                : > '{}'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               if [ -f '{}' ]; then\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+               else\n\
+                 : > '{}'\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               fi\n\
              fi\n",
             lane_json,
             prompt_attempts.display(),
@@ -1699,6 +1707,8 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
             bead.id,
             bead.id,
             prompt_settled.display(),
+            first_pane_read.display(),
+            first_pane_read.display(),
         ),
     )
     .unwrap();
@@ -1742,7 +1752,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_nudges_a_three_frame_late_paste_without_waiting_for_composer_render() {
+fn abacus_run_nudges_a_meterless_baseline_three_frame_late_paste() {
     require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1784,7 +1794,7 @@ fn abacus_run_nudges_a_three_frame_late_paste_without_waiting_for_composer_rende
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
                if [ ! -f '{}' ]; then\n\
                  : > '{}'\n\
-                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+                 printf 'Codex starting; status meter not rendered yet\\n'\n\
                elif [ ! -f '{}' ]; then\n\
                  : > '{}'\n\
                  printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
@@ -1843,7 +1853,7 @@ fn abacus_run_nudges_a_three_frame_late_paste_without_waiting_for_composer_rende
             .filter(|call| call.starts_with("pane read "))
             .count(),
         2,
-        "fresh recovery must compare pre-prompt and post-settle diagnostics:\n{calls}"
+        "meterless fresh recovery must nudge after the rendered idle post-settle frame:\n{calls}"
     );
     assert_eq!(
         calls

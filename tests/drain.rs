@@ -1351,6 +1351,7 @@ fn run_rework_dispatch_sweep(
     workspace_survives: bool,
     ready_fresh_bead: bool,
     prompt_remains_pasted: bool,
+    meterless_baseline: bool,
 ) -> (std::process::Output, String, String) {
     let bead_id = "it-rework";
     let workspace = TempDir::new(tag);
@@ -1362,6 +1363,7 @@ fn run_rework_dispatch_sweep(
     let recovered = workspace.0.join("recovered");
     let fresh_completed = workspace.0.join("fresh-completed");
     let first_pane_read = workspace.0.join("first-pane-read");
+    let second_pane_read = workspace.0.join("second-pane-read");
 
     let ready = if ready_fresh_bead {
         r#"[{"id":"it-fresh","title":"fresh work","priority":0,"issue_type":"task","labels":[]}]"#
@@ -1457,11 +1459,18 @@ elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
   printf 'fresh settled\n'
 elif [ "$1 $2" = "pane read" ]; then
   if [ "{prompt_remains_pasted}" = "true" ]; then
-    if [ -f '{first_pane_read}' ]; then
-      printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24%% used\n'
-    else
+    if [ ! -f '{first_pane_read}' ]; then
       : > '{first_pane_read}'
+      if [ "{meterless_baseline}" = "true" ]; then
+        printf 'Codex starting; status meter not rendered yet\n'
+      else
+        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+      fi
+    elif [ "{meterless_baseline}" = "true" ] && [ ! -f '{second_pane_read}' ]; then
+      : > '{second_pane_read}'
       printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+    else
+      printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24%% used\n'
     fi
   else
     if [ -f '{first_pane_read}' ]; then
@@ -1490,7 +1499,9 @@ fi
             rework_prompted = rework_prompted.display(),
             fresh_completed = fresh_completed.display(),
             first_pane_read = first_pane_read.display(),
+            second_pane_read = second_pane_read.display(),
             prompt_remains_pasted = prompt_remains_pasted,
+            meterless_baseline = meterless_baseline,
         ),
     )
     .unwrap();
@@ -1546,7 +1557,7 @@ fi
 #[test]
 fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-existing-agent", true, false, false, false);
+        run_rework_dispatch_sweep("rework-existing-agent", true, false, false, false, false);
 
     assert!(
         output.status.success(),
@@ -1589,7 +1600,7 @@ fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
 #[test]
 fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
     let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-pasted-prompt", true, false, false, true);
+        run_rework_dispatch_sweep("rework-pasted-prompt", true, false, false, true, false);
 
     assert!(
         output.status.success(),
@@ -1643,9 +1654,39 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
 }
 
 #[test]
+fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
+    let (output, herdr_calls, events) =
+        run_rework_dispatch_sweep("rework-meterless-baseline", true, false, false, true, true);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(events, "nudge-rework\n");
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        2,
+        "meterless warm recovery must not wait for the third-frame composer:\n{herdr_calls}"
+    );
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call == &"agent send-keys it-rework Enter")
+            .count(),
+        1,
+        "the meterless warm author must receive exactly one Enter nudge:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
     let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-before-fresh", true, false, true, false);
+        run_rework_dispatch_sweep("rework-before-fresh", true, false, true, false, false);
 
     assert!(
         output.status.success(),
@@ -1668,7 +1709,7 @@ fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
 #[test]
 fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-recover-agent", false, false, false, false);
+        run_rework_dispatch_sweep("rework-recover-agent", false, false, false, false, false);
 
     assert!(
         output.status.success(),
@@ -1701,7 +1742,7 @@ fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
 #[test]
 fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false, false);
+        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false, false, false);
 
     assert!(
         output.status.success(),
