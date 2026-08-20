@@ -1852,8 +1852,8 @@ fn abacus_run_nudges_a_meterless_baseline_three_frame_late_paste() {
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        2,
-        "meterless fresh recovery must nudge after the rendered idle post-settle frame:\n{calls}"
+        3,
+        "meterless fresh recovery must resolve the baseline before checking the post-settle frame:\n{calls}"
     );
     assert_eq!(
         calls
@@ -1884,6 +1884,125 @@ fn abacus_run_nudges_a_meterless_baseline_three_frame_late_paste() {
             bead.id
         )),
         "the recovered turn was not observed to completion:\n{calls}"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn abacus_run_nudges_when_post_settle_meter_temporarily_disappears() {
+    require_br!();
+    let ws = TempWorkspace::new("never-engaged-post-settle-redraw");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    br(
+        &ws.0,
+        &["create", "--title=worker survives post-settle redraw"],
+    );
+
+    let json = br(&ws.0, &["ready", "--json"]);
+    let beads = parse_ready(&json).unwrap();
+    let bead = select_bead(&beads).unwrap();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
+    let fake_herdr = fake_bin.join("herdr");
+    let herdr_calls = ws.0.join("herdr-calls");
+    let first_pane_read = ws.0.join("first-pane-read");
+    let second_pane_read = ws.0.join("second-pane-read");
+    let lane_json = serde_json::json!({
+        "result": {
+            "type": "worktree_created",
+            "workspace": { "workspace_id": "never-engaged-redraw-workspace" },
+            "root_pane": { "pane_id": "never-engaged-redraw-pane" },
+            "worktree": {
+                "path": ws.0,
+                "branch": format!("lane/{}", bead.id)
+            }
+        }
+    });
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf '{{\"result\":{{\"type\":\"agent_prompted\",\"agent\":{{\"agent_status\":\"done\"}}}}}}\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               if [ ! -f '{}' ]; then\n\
+                 : > '{}'\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               elif [ ! -f '{}' ]; then\n\
+                 : > '{}'\n\
+                 printf 'Codex redraw in progress; status meter temporarily unavailable\\n'\n\
+               else\n\
+                 printf '› [Pasted Content 1004 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               fi\n\
+             elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
+               cd '{}'\n\
+               br close '{}'\n\
+             elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
+               printf 'agent transition observed\\n'\n\
+             fi\n",
+            herdr_calls.display(),
+            lane_json,
+            first_pane_read.display(),
+            first_pane_read.display(),
+            second_pane_read.display(),
+            second_pane_read.display(),
+            ws.0.display(),
+            bead.id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("zero-effect settle"),
+        "the resolved unchanged meter was not classified as zero effect:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("nudging Enter once"),
+        "the pasted prompt was not nudged after the transient redraw:\n{stderr}"
+    );
+    let calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        3,
+        "the post-settle meter must be re-read after the transient frame:\n{calls}"
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("agent send-keys "))
+            .collect::<Vec<_>>(),
+        [format!("agent send-keys {} Enter", bead.id)],
+        "the pasted prompt must receive exactly one Enter nudge:\n{calls}"
     );
     assert_eq!(
         parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
@@ -2120,8 +2239,8 @@ fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        2,
-        "each terminal lane must capture only its pre-prompt baseline:\n{calls}"
+        6,
+        "each terminal lane must exhaust only its bounded pre-prompt baseline sample:\n{calls}"
     );
     for forbidden in ["agent send-keys", "agent wait"] {
         assert!(

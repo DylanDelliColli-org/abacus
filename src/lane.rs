@@ -300,11 +300,33 @@ fn current_codex_context_percent(pane: &str) -> Option<u8> {
     })
 }
 
-fn should_nudge_after_settle(baseline_context: Option<u8>, pane: &str) -> bool {
-    let post_settle_context = current_codex_context_percent(pane);
-    match baseline_context {
-        Some(baseline) => post_settle_context == Some(baseline),
-        None => post_settle_context.is_none_or(|context| context == 0),
+const CONTEXT_METER_SAMPLE_ATTEMPTS: usize = 3;
+const CONTEXT_METER_SAMPLE_DELAY: Duration = Duration::from_millis(50);
+
+fn sample_codex_context_percent(pane_id: &str) -> Result<(Option<u8>, String), String> {
+    let mut pane = String::new();
+    for attempt in 0..CONTEXT_METER_SAMPLE_ATTEMPTS {
+        pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
+        if let Some(context) = current_codex_context_percent(&pane) {
+            return Ok((Some(context), pane));
+        }
+        if attempt + 1 < CONTEXT_METER_SAMPLE_ATTEMPTS {
+            std::thread::sleep(CONTEXT_METER_SAMPLE_DELAY);
+        }
+    }
+    Ok((None, pane))
+}
+
+fn should_nudge_after_settle(
+    baseline_context: Option<u8>,
+    post_settle_context: Option<u8>,
+) -> bool {
+    match post_settle_context {
+        Some(post_settle) => match baseline_context {
+            Some(baseline) => post_settle == baseline,
+            None => post_settle == 0,
+        },
+        None => true,
     }
 }
 
@@ -329,20 +351,20 @@ pub enum PromptOutcome {
 
 /// Prompt an agent through the shared startup-race seam.
 ///
-/// Herdr can report a successful settled prompt while a fresh Codex TUI still
-/// has produced no worker-authored progress. A zero-context settle receives
-/// one Enter regardless of whether Codex has rendered its collapsed pasted
-/// composer yet. The composer rendering is logged only as diagnostic evidence;
-/// it never gates recovery. Observe the turn start, then wait for its terminal
-/// state instead of pasting again.
+/// Herdr can report a successful settled prompt while a Codex TUI still has
+/// produced no worker-authored progress. Both context observations are sampled
+/// over a bounded redraw window. A tracker-silent settle receives one Enter
+/// unless the resolved post-settle meter proves progress relative to the
+/// baseline. Composer rendering is logged only as diagnostic evidence; it never
+/// gates recovery. Observe the turn start, then wait for its terminal state
+/// instead of pasting again.
 pub fn prompt_agent(
     agent_name: &str,
     pane_id: &str,
     prompt: &str,
     stall_context: &str,
 ) -> Result<PromptOutcome, String> {
-    let baseline_pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
-    let baseline_context = current_codex_context_percent(&baseline_pane);
+    let (baseline_context, _) = sample_codex_context_percent(pane_id)?;
     prompt_agent_with_tracker_probe(
         agent_name,
         pane_id,
@@ -380,8 +402,8 @@ where
         return Ok(PromptOutcome::TrackerObserved { settled, outcome });
     }
 
-    let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
-    if !should_nudge_after_settle(baseline_context, &pane) {
+    let (post_settle_context, pane) = sample_codex_context_percent(pane_id)?;
+    if !should_nudge_after_settle(baseline_context, post_settle_context) {
         return Ok(match tracker_outcome {
             Some(outcome) => PromptOutcome::TrackerObserved { settled, outcome },
             None => PromptOutcome::Settled(settled),
@@ -393,11 +415,14 @@ where
     } else {
         "composer not yet visible or empty"
     };
-    let baseline_diagnostic = baseline_context
-        .map(|percent| format!("context unchanged at {percent}%"))
-        .unwrap_or_else(|| "context baseline unavailable".to_owned());
+    let context_diagnostic = match (baseline_context, post_settle_context) {
+        (Some(percent), Some(_)) => format!("context unchanged at {percent}%"),
+        (None, Some(0)) => "context baseline unavailable; post-settle idle at 0%".to_owned(),
+        (_, None) => "post-settle context unavailable".to_owned(),
+        (None, Some(_)) => unreachable!("a nonzero post-settle context proves progress"),
+    };
     eprintln!(
-        "agent prompt had a zero-effect settle ({baseline_diagnostic}; {composer_diagnostic}); \
+        "agent prompt had a zero-effect settle ({context_diagnostic}; {composer_diagnostic}); \
          nudging Enter once"
     );
     capture("herdr", &["agent", "send-keys", agent_name, "Enter"], None)?;
@@ -452,12 +477,7 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let baseline_pane = capture(
-        "herdr",
-        &["pane", "read", &lane.pane_id, "--lines", "40"],
-        None,
-    )?;
-    let baseline_context = current_codex_context_percent(&baseline_pane);
+    let (baseline_context, _) = sample_codex_context_percent(&lane.pane_id)?;
     let outcome = prompt_agent_with_tracker_probe(
         agent_name,
         &lane.pane_id,
@@ -507,12 +527,7 @@ pub fn lane_prompt_rework(
     adjudication: &Adjudication,
 ) -> Result<PromptOutcome, String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
-    let baseline_pane = capture(
-        "herdr",
-        &["pane", "read", &lane.pane_id, "--lines", "40"],
-        None,
-    )?;
-    let baseline_context = current_codex_context_percent(&baseline_pane);
+    let (baseline_context, _) = sample_codex_context_percent(&lane.pane_id)?;
     let outcome = prompt_agent_with_tracker_probe(
         agent_name,
         &lane.pane_id,
@@ -769,14 +784,20 @@ mod tests {
     #[test]
     fn zero_effect_settle_nudges_before_pasted_composer_renders() {
         let pane = "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n";
-        assert!(should_nudge_after_settle(Some(0), pane));
+        assert!(should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(pane)
+        ));
         assert!(!pasted_composer_is_visible(pane));
     }
 
     #[test]
     fn zero_effect_settle_nudges_when_pasted_composer_is_visible() {
         let pane = "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n";
-        assert!(should_nudge_after_settle(Some(0), pane));
+        assert!(should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(pane)
+        ));
         assert!(pasted_composer_is_visible(pane));
     }
 
@@ -784,12 +805,16 @@ mod tests {
     fn engaged_settle_does_not_nudge() {
         assert!(!should_nudge_after_settle(
             Some(0),
-            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+            current_codex_context_percent(
+                "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+            )
         ));
         assert!(!should_nudge_after_settle(
             Some(0),
-            "• Worker completed and reported the literal diagnostic Context 0% used\n\n\
-             gpt-5.6-sol high fast · /workspace · Approve for me · Context 24% used · weekly 92% left\n"
+            current_codex_context_percent(
+                "• Worker completed and reported the literal diagnostic Context 0% used\n\n\
+                 gpt-5.6-sol high fast · /workspace · Approve for me · Context 24% used · weekly 92% left\n"
+            )
         ));
     }
 
@@ -797,24 +822,28 @@ mod tests {
     fn unchanged_warm_context_is_a_zero_effect_settle() {
         assert!(should_nudge_after_settle(
             Some(24),
-            "› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24% used\n"
+            current_codex_context_percent(
+                "› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24% used\n"
+            )
         ));
     }
 
     #[test]
-    fn unavailable_baseline_uses_post_settle_meter() {
-        assert!(should_nudge_after_settle(
-            None,
-            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n"
-        ));
-        assert!(!should_nudge_after_settle(
-            None,
-            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
-        ));
-        assert!(should_nudge_after_settle(
-            None,
-            "Codex starting; status meter not rendered yet\n"
-        ));
+    fn resolved_context_decision_table_uses_progress_as_the_only_nudge_veto() {
+        for (baseline, post_settle, should_nudge) in [
+            (Some(0), Some(0), true),
+            (Some(0), Some(24), false),
+            (Some(0), None, true),
+            (None, Some(0), true),
+            (None, Some(24), false),
+            (None, None, true),
+        ] {
+            assert_eq!(
+                should_nudge_after_settle(baseline, post_settle),
+                should_nudge,
+                "unexpected decision for baseline {baseline:?}, post-settle {post_settle:?}"
+            );
+        }
     }
 
     #[test]

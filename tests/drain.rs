@@ -1361,10 +1361,9 @@ fn run_rework_dispatch_sweep(
     let herdr_calls = workspace.0.join("herdr-calls");
     let events = workspace.0.join("events");
     let rework_prompted = workspace.0.join("rework-prompted");
+    let prompt_settled = workspace.0.join("prompt-settled");
     let recovered = workspace.0.join("recovered");
     let fresh_completed = workspace.0.join("fresh-completed");
-    let first_pane_read = workspace.0.join("first-pane-read");
-    let second_pane_read = workspace.0.join("second-pane-read");
 
     let ready = if ready_fresh_bead {
         r#"[{"id":"it-fresh","title":"fresh work","priority":0,"issue_type":"task","labels":[]}]"#
@@ -1449,6 +1448,7 @@ elif [ "$1 $2" = "agent start" ]; then
 elif [ "$1 $2" = "worktree remove" ]; then
   exit 0
 elif [ "$1 $2 $3" = "agent prompt {bead_id}" ]; then
+  : > '{prompt_settled}'
   if [ "{prompt_remains_pasted}" = "false" ]; then
     printf 'prompt-rework\n' >> '{events}'
     : > '{rework_prompted}'
@@ -1459,35 +1459,20 @@ elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
   : > '{fresh_completed}'
   printf 'fresh settled\n'
 elif [ "$1 $2" = "pane read" ]; then
-  if [ "{prompt_remains_pasted}" = "true" ]; then
-    if [ ! -f '{first_pane_read}' ]; then
-      : > '{first_pane_read}'
-      if [ "{meterless_baseline}" = "true" ]; then
-        printf 'Codex starting; status meter not rendered yet\n'
-      else
-        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
-      fi
-    elif [ "{meterless_baseline}" = "true" ] && [ ! -f '{second_pane_read}' ]; then
-      : > '{second_pane_read}'
-      if [ "{meterless_post_settle}" = "true" ]; then
-        printf 'Codex starting; status meter not rendered yet\n'
-      else
-        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
-      fi
+  if [ ! -f '{prompt_settled}' ]; then
+    if [ "{meterless_baseline}" = "true" ]; then
+      printf 'Codex starting; status meter not rendered yet\n'
+    else
+      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+    fi
+  elif [ "{prompt_remains_pasted}" = "true" ]; then
+    if [ "{meterless_post_settle}" = "true" ]; then
+      printf 'Codex redraw in progress; status meter temporarily unavailable\n'
     else
       printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24%% used\n'
     fi
   else
-    if [ -f '{first_pane_read}' ]; then
-      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 25%% used\n'
-    else
-      : > '{first_pane_read}'
-      if [ "{meterless_baseline}" = "true" ]; then
-        printf 'Codex starting; status meter not rendered yet\n'
-      else
-        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
-      fi
-    fi
+    printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 25%% used\n'
   fi
 elif [ "$1 $2 $3" = "agent send-keys {bead_id}" ]; then
   printf 'nudge-rework\n' >> '{events}'
@@ -1506,9 +1491,8 @@ fi
             open_workspace_id = open_workspace_id,
             events = events.display(),
             rework_prompted = rework_prompted.display(),
+            prompt_settled = prompt_settled.display(),
             fresh_completed = fresh_completed.display(),
-            first_pane_read = first_pane_read.display(),
-            second_pane_read = second_pane_read.display(),
             prompt_remains_pasted = prompt_remains_pasted,
             meterless_baseline = meterless_baseline,
             meterless_post_settle = meterless_post_settle,
@@ -1701,8 +1685,8 @@ fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        2,
-        "meterless warm recovery must not wait for the third-frame composer:\n{herdr_calls}"
+        6,
+        "meterless warm recovery must exhaust both bounded sampling windows:\n{herdr_calls}"
     );
     assert_eq!(
         herdr_calls
@@ -2031,7 +2015,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
     let posted_status = workspace.0.join("posted-status");
     let gh_calls = workspace.0.join("gh-calls");
     let herdr_calls = workspace.0.join("herdr-calls");
-    let first_pane_read = workspace.0.join("first-pane-read");
+    let reviewer_prompted = workspace.0.join("reviewer-prompted");
     std::fs::write(&phase, "1\n").unwrap();
 
     let fake_br = fake_bin.join("br");
@@ -2077,10 +2061,10 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
                printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"reviewer-workspace\"}},\"root_pane\":{{\"pane_id\":\"reviewer-pane\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"agent start\" ]; then exit 0\n\
              elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ] && [ \"$current_phase\" = \"3\" ]; then printf '4\\n' > '{phase}'; printf 'rework settled\\n'\n\
-             elif [ \"$1 $2\" = \"agent prompt\" ]; then printf 'reviewer settled\\n'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then : > '{reviewer_prompted}'; printf 'reviewer settled\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
-               if [ -f '{first_pane_read}' ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 25%% used\\n'\n\
-               else : > '{first_pane_read}'; printf 'Codex starting; status meter not rendered yet\\n'; fi\n\
+               if [ -f '{reviewer_prompted}' ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 25%% used\\n'\n\
+               else printf 'Codex starting; status meter not rendered yet\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"agent send-keys rev-it-review-status-c1\" ]; then exit 0\n\
              elif [ \"$1 $2 $3\" = \"agent wait rev-it-review-status-c1\" ]; then printf 'reviewer never transitioned\\n' >&2; exit 1\n\
              elif [ \"$1 $2 $3\" = \"workspace close reviewer-workspace\" ]; then exit 0\n\
@@ -2089,7 +2073,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
             phase = phase.display(),
             bead_id = bead_id,
             root = workspace.0.display(),
-            first_pane_read = first_pane_read.display(),
+            reviewer_prompted = reviewer_prompted.display(),
         ),
     )
     .unwrap();
