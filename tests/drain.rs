@@ -1081,6 +1081,8 @@ fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
                printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{bead_id}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"warm-workspace\",\"pane_id\":\"warm-pane\"}}]}}}}'\n\
              elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ]; then\n\
                printf 'rework settled\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
              elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf 'fatal: lane/{bead_id} is already checked out\\n' >&2; exit 128\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
@@ -1205,6 +1207,8 @@ fn run_skips_existing_lane_pending_review(comments: &str, tag: &str) {
                exit 0\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                printf 'fresh worker settled\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
              elif [ \"$1 $2\" = \"worktree remove\" ]; then\n\
                exit 0\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
@@ -1304,6 +1308,7 @@ fn run_rework_dispatch_sweep(
     warm_agent_present: bool,
     workspace_survives: bool,
     ready_fresh_bead: bool,
+    prompt_remains_pasted: bool,
 ) -> (std::process::Output, String, String) {
     let bead_id = "it-rework";
     let workspace = TempDir::new(tag);
@@ -1398,13 +1403,26 @@ elif [ "$1 $2" = "agent start" ]; then
 elif [ "$1 $2" = "worktree remove" ]; then
   exit 0
 elif [ "$1 $2 $3" = "agent prompt {bead_id}" ]; then
-  printf 'prompt-rework\n' >> '{events}'
-  : > '{rework_prompted}'
+  if [ "{prompt_remains_pasted}" = "false" ]; then
+    printf 'prompt-rework\n' >> '{events}'
+    : > '{rework_prompted}'
+  fi
   printf 'rework settled\n'
 elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
   printf 'prompt-fresh\n' >> '{events}'
   : > '{fresh_completed}'
   printf 'fresh settled\n'
+elif [ "$1 $2" = "pane read" ]; then
+  if [ "{prompt_remains_pasted}" = "true" ]; then
+    printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 0%% used\n'
+  else
+    printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+  fi
+elif [ "$1 $2 $3" = "agent send-keys {bead_id}" ]; then
+  printf 'nudge-rework\n' >> '{events}'
+  : > '{rework_prompted}'
+elif [ "$1 $2 $3" = "agent wait {bead_id}" ]; then
+  printf 'rework agent transition observed\n'
 else
   printf 'unexpected herdr call: %s\n' "$*" >&2; exit 2
 fi
@@ -1418,6 +1436,7 @@ fi
             events = events.display(),
             rework_prompted = rework_prompted.display(),
             fresh_completed = fresh_completed.display(),
+            prompt_remains_pasted = prompt_remains_pasted,
         ),
     )
     .unwrap();
@@ -1473,7 +1492,7 @@ fi
 #[test]
 fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-existing-agent", true, false, false);
+        run_rework_dispatch_sweep("rework-existing-agent", true, false, false, false);
 
     assert!(
         output.status.success(),
@@ -1507,12 +1526,55 @@ fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
             .any(|call| call.starts_with("worktree create")),
         "warm rework minted a fresh lane:\n{herdr_calls}"
     );
+    assert!(
+        !herdr_calls.contains("agent send-keys"),
+        "a genuinely engaged rework prompt must not be nudged:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
+    let (output, herdr_calls, events) =
+        run_rework_dispatch_sweep("rework-pasted-prompt", true, false, false, true);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(events, "nudge-rework\n");
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call.starts_with("agent prompt it-rework "))
+            .count(),
+        1,
+        "the rework brief must be pasted exactly once:\n{herdr_calls}"
+    );
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call == &"agent send-keys it-rework Enter")
+            .count(),
+        1,
+        "the warm author must receive exactly one Enter nudge:\n{herdr_calls}"
+    );
+    for wait in [
+        "agent wait it-rework --until working --timeout 5000",
+        "agent wait it-rework --until done --until blocked",
+    ] {
+        assert!(
+            herdr_calls.contains(wait),
+            "the recovered rework turn omitted {wait:?}:\n{herdr_calls}"
+        );
+    }
 }
 
 #[test]
 fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
     let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-before-fresh", true, false, true);
+        run_rework_dispatch_sweep("rework-before-fresh", true, false, true, false);
 
     assert!(
         output.status.success(),
@@ -1535,7 +1597,7 @@ fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
 #[test]
 fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-recover-agent", false, false, false);
+        run_rework_dispatch_sweep("rework-recover-agent", false, false, false, false);
 
     assert!(
         output.status.success(),
@@ -1568,7 +1630,7 @@ fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
 #[test]
 fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false);
+        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false, false);
 
     assert!(
         output.status.success(),
@@ -1638,6 +1700,12 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                if [ ! -f \"$4\" ]; then printf 'missing brief: %s\\n' \"$4\" >&2; exit 3; fi\n\
                printf 'reviewer settled\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               printf '› [Pasted Content 1412 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+             elif [ \"$1 $2 $3\" = \"agent send-keys rev-it-review-c1\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2 $3\" = \"agent wait rev-it-review-c1\" ]; then\n\
+               printf 'reviewer transition observed\\n'\n\
              else\n\
                printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2\n\
              fi\n",
@@ -1723,6 +1791,23 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
         brief.display()
     );
     assert!(brief.starts_with(workspace.0.join("target/abacus-tmp/reviews")));
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call == &"agent send-keys rev-it-review-c1 Enter")
+            .count(),
+        1,
+        "the pasted reviewer brief must receive exactly one Enter nudge:\n{calls}"
+    );
+    for wait in [
+        "agent wait rev-it-review-c1 --until working --timeout 5000",
+        "agent wait rev-it-review-c1 --until done --until blocked",
+    ] {
+        assert!(
+            calls.contains(wait),
+            "the recovered reviewer turn omitted {wait:?}:\n{calls}"
+        );
+    }
     assert!(
         !calls.contains("agent wait --until idle"),
         "the measured-broken wait form reappeared:\n{calls}"
@@ -1786,6 +1871,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
              elif [ \"$1 $2\" = \"agent start\" ]; then exit 0\n\
              elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ] && [ \"$current_phase\" = \"3\" ]; then printf '4\\n' > '{phase}'; printf 'rework settled\\n'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then printf 'reviewer settled\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
              elif [ \"$1 $2 $3\" = \"workspace close reviewer-workspace\" ]; then exit 0\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
             calls = herdr_calls.display(),

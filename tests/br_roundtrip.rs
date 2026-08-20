@@ -1601,7 +1601,7 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engaged_worker() {
+fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
     require_br!();
     let ws = TempWorkspace::new("transient-outcome-probe");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1696,30 +1696,31 @@ fn abacus_run_retries_a_transient_outcome_probe_before_reprompting_a_never_engag
         .output()
         .unwrap();
 
-    assert!(
-        out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(3),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
         std::fs::read_to_string(prompt_attempts).unwrap(),
-        "attempt\nattempt\n",
-        "a recovered NeverEngaged probe must feed the existing re-prompt path"
+        "attempt\n",
+        "a recovered NeverEngaged probe must not paste the prompt a second time"
     );
     assert_eq!(
         std::fs::read_to_string(probe_attempts).unwrap(),
-        "probe\nprobe\nprobe\n",
-        "one failed probe, its retry, and the post-re-prompt probe are expected"
+        "probe\nprobe\n",
+        "one failed probe and its retry are expected"
     );
     assert_eq!(
         parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
-        BeadOutcome::Completed
+        BeadOutcome::NeverEngaged
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker() {
+fn abacus_run_nudges_once_when_a_successful_prompt_remains_unsubmitted() {
     require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1736,7 +1737,7 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
     std::fs::create_dir(&fake_bin).unwrap();
     install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
-    let prompt_attempts = ws.0.join("prompt-attempts");
+    let herdr_calls = ws.0.join("herdr-calls");
     let lane_json = serde_json::json!({
         "result": {
             "type": "worktree_created",
@@ -1751,23 +1752,22 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
     std::fs::write(
         &fake_herdr,
         format!(
-            "#!/bin/sh\n\
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
              if [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
-               printf 'attempt\\n' >> '{}'\n\
+               printf 'prompt returned success while content remained pasted\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               printf '› [Pasted Content 1004 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+             elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
                cd '{}'\n\
-               if [ \"$(wc -l < '{}')\" -eq 1 ]; then\n\
-                 br update '{}' --status open\n\
-               else\n\
-                 br close '{}'\n\
-               fi\n\
+               br close '{}'\n\
+             elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
+               printf 'agent reached %s\\n' \"$5\"\n\
              fi\n",
+            herdr_calls.display(),
             lane_json,
-            prompt_attempts.display(),
             ws.0.display(),
-            prompt_attempts.display(),
-            bead.id,
             bead.id,
         ),
     )
@@ -1791,9 +1791,36 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let calls = std::fs::read_to_string(herdr_calls).unwrap();
     assert_eq!(
-        std::fs::read_to_string(prompt_attempts).unwrap(),
-        "attempt\nattempt\n"
+        calls
+            .lines()
+            .filter(|call| call.starts_with("agent prompt "))
+            .count(),
+        1,
+        "the recovery must submit the already-pasted prompt, not paste it again:\n{calls}"
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("agent send-keys "))
+            .collect::<Vec<_>>(),
+        [format!("agent send-keys {} Enter", bead.id)],
+        "the pasted prompt must receive exactly one Enter nudge:\n{calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "agent wait {} --until working --timeout 5000",
+            bead.id
+        )),
+        "the recovery did not observe the nudged turn start:\n{calls}"
+    );
+    assert!(
+        calls.contains(&format!(
+            "agent wait {} --until done --until blocked",
+            bead.id
+        )),
+        "the recovery did not wait for the nudged turn to settle:\n{calls}"
     );
     assert_eq!(
         parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
@@ -1803,7 +1830,7 @@ fn abacus_run_reprompts_once_when_a_successful_prompt_never_engages_the_worker()
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_stops_after_a_second_never_engaged_outcome() {
+fn abacus_run_stops_after_one_prompt_without_the_pasted_composer_signature() {
     require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-exhausted");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1869,7 +1896,7 @@ fn abacus_run_stops_after_a_second_never_engaged_outcome() {
     assert!(stderr.contains("never engaged"), "stderr: {stderr}");
     assert_eq!(
         std::fs::read_to_string(prompt_attempts).unwrap(),
-        "attempt\nattempt\n"
+        "attempt\n"
     );
 }
 

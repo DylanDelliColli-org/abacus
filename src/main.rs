@@ -17,14 +17,14 @@ use abacus::land::{
     ValidationFailure, admission_red_park_body, decide, dequeue_park_body, enumerate_candidates,
     parse_eligibility, parse_enqueue_result, parse_queue_state,
 };
+#[cfg(test)]
+use abacus::lane::retry_probe_once;
 use abacus::lane::{
     LaneState, LaneStateInputs, MorningReport, PullRequestProbe, PullRequestState, capture,
     derive_lane_state, lane_open, lane_open_existing_worktree, lane_prompt, lane_prompt_rework,
     lane_reap, lane_reap_for_state, lane_recover, lane_settle, lane_start_agent,
     probe_bead_outcome,
 };
-#[cfg(test)]
-use abacus::lane::{retry_never_engaged_once, retry_probe_once};
 use abacus::review::{
     Adjudication, AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState,
     PostedReviewStatus, ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
@@ -1800,8 +1800,8 @@ fn dispatch_cycle(
     let lane_started = Instant::now();
     let lane_result = (|| -> Result<(abacus::Lane, abacus::BeadOutcome), String> {
         let lane = lane_open(repo_str, &bead, &agent_name)?;
-        let prompt = lane_prompt(&bead, &lane, &default_branch, &agent_name)?;
-        let outcome = lane_settle(repo, &bead, &prompt)?;
+        lane_prompt(&bead, &lane, &default_branch, &agent_name)?;
+        let outcome = lane_settle(repo, &bead)?;
         Ok((lane, outcome))
     })();
 
@@ -2176,30 +2176,6 @@ mod tests {
         assert_eq!(error, "second probe failed");
         assert_eq!(probe_calls, 2, "only one re-probe is allowed");
         assert_eq!(delay_calls, 1, "the re-probe must be delayed once");
-    }
-
-    #[test]
-    fn never_engaged_retry_runs_one_reprompt_and_one_reprobe_only() {
-        let mut prompt_calls = 0;
-        let mut probe_calls = 0;
-
-        let (settled, outcome) = retry_never_engaged_once(
-            BeadOutcome::NeverEngaged,
-            || {
-                prompt_calls += 1;
-                Ok("second prompt settled".to_owned())
-            },
-            || {
-                probe_calls += 1;
-                Ok(BeadOutcome::NeverEngaged)
-            },
-        )
-        .unwrap();
-
-        assert_eq!(settled.as_deref(), Some("second prompt settled"));
-        assert_eq!(outcome, BeadOutcome::NeverEngaged);
-        assert_eq!(prompt_calls, 1, "only one recovery prompt is allowed");
-        assert_eq!(probe_calls, 1, "the recovery prompt gets one re-probe");
     }
 
     #[test]

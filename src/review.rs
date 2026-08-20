@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::lane::capture;
-use crate::{is_agent_prompt_stalled, sanitize_agent_name};
+use crate::lane::{capture, prompt_agent};
+use crate::sanitize_agent_name;
 
 pub const BLOCKED_COMMENT_TOKEN: &str = "BLOCKED";
 pub const STATUS_CONTEXT: &str = "adversarial-review";
@@ -514,15 +514,7 @@ pub fn launch_reviewer(
     )?;
 
     let path_arg = path.to_string_lossy().into_owned();
-    let prompt_args = ["agent", "prompt", &agent_name, &path_arg, "--wait"];
-    match capture("herdr", &prompt_args, None) {
-        Ok(_) => {}
-        Err(error) if is_agent_prompt_stalled(&error) => {
-            eprintln!("agent prompt stalled during reviewer startup; retrying once");
-            capture("herdr", &prompt_args, None)?;
-        }
-        Err(error) => return Err(error),
-    }
+    prompt_agent(&agent_name, &pane_id, &path_arg, "reviewer startup")?;
     Ok(path)
 }
 

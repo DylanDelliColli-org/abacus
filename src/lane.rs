@@ -187,12 +187,6 @@ impl MorningReport {
     }
 }
 
-/// Everything needed to repeat a prompt after a worker never engages.
-pub struct LanePrompt {
-    agent_name: String,
-    prompt: String,
-}
-
 fn open_lane_worktree(repo_str: &str, bead_id: &str) -> Result<Lane, String> {
     let branch = format!("lane/{bead_id}");
     let created = capture(
@@ -282,13 +276,78 @@ pub fn lane_open_existing_worktree(
     Ok(lane)
 }
 
+fn has_unsubmitted_codex_prompt(pane: &str) -> bool {
+    let tail = pane.lines().rev().take(12).collect::<Vec<_>>();
+    let pasted_composer = tail.iter().any(|line| {
+        let line = line.trim_start();
+        line.starts_with('›') && line.contains("Pasted Content") && line.contains("chars")
+    });
+    let untouched_context = tail.iter().any(|line| line.contains("Context 0% used"));
+    pasted_composer && untouched_context
+}
+
+/// Prompt an agent through the shared startup-race seam.
+///
+/// Herdr can report a successful settled prompt while a fresh Codex TUI still
+/// holds the paste in its composer. The terminal signature is precise: the
+/// composer contains Codex's collapsed `Pasted Content` marker and the context
+/// meter remains at zero. Submit that existing paste with one Enter, observe
+/// the turn start, then wait for its terminal state instead of pasting again.
+pub fn prompt_agent(
+    agent_name: &str,
+    pane_id: &str,
+    prompt: &str,
+    stall_context: &str,
+) -> Result<String, String> {
+    let prompt_args = ["agent", "prompt", agent_name, prompt, "--wait"];
+    let settled = match capture("herdr", &prompt_args, None) {
+        Ok(settled) => settled,
+        Err(error) if is_agent_prompt_stalled(&error) => {
+            eprintln!("agent prompt stalled during {stall_context}; retrying once");
+            capture("herdr", &prompt_args, None)?
+        }
+        Err(error) => return Err(error),
+    };
+
+    let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
+    if !has_unsubmitted_codex_prompt(&pane) {
+        return Ok(settled);
+    }
+
+    eprintln!("agent prompt remained pasted after settle; nudging Enter once");
+    capture("herdr", &["agent", "send-keys", agent_name, "Enter"], None)?;
+    if let Err(error) = capture(
+        "herdr",
+        &[
+            "agent",
+            "wait",
+            agent_name,
+            "--until",
+            "working",
+            "--timeout",
+            "5000",
+        ],
+        None,
+    ) {
+        eprintln!("Enter nudge produced no observed worker turn: {error}");
+        return Ok(settled);
+    }
+    capture(
+        "herdr",
+        &[
+            "agent", "wait", agent_name, "--until", "done", "--until", "blocked",
+        ],
+        None,
+    )
+}
+
 /// Dispatch the initial worker prompt, retrying the observed startup race once.
 pub fn lane_prompt(
     bead: &ReadyBead,
     lane: &Lane,
     default_branch: &str,
     agent_name: &str,
-) -> Result<LanePrompt, String> {
+) -> Result<(), String> {
     let rust_version = target_rust_version(Path::new(&lane.checkout_path))?;
     let prompt = dispatch_prompt(
         &bead.id,
@@ -299,20 +358,9 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let prompt_args = ["agent", "prompt", agent_name, &prompt, "--wait"];
-    let settled = match capture("herdr", &prompt_args, None) {
-        Ok(settled) => settled,
-        Err(error) if is_agent_prompt_stalled(&error) => {
-            eprintln!("agent prompt stalled during worker startup; retrying once");
-            capture("herdr", &prompt_args, None)?
-        }
-        Err(error) => return Err(error),
-    };
+    let settled = prompt_agent(agent_name, &lane.pane_id, &prompt, "worker startup")?;
     println!("{}", settled.trim_end());
-    Ok(LanePrompt {
-        agent_name: agent_name.to_owned(),
-        prompt,
-    })
+    Ok(())
 }
 
 pub fn rework_prompt(bead_id: &str, branch: &str, adjudication: &Adjudication) -> String {
@@ -347,47 +395,15 @@ pub fn lane_prompt_rework(
     adjudication: &Adjudication,
 ) -> Result<(), String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
-    let args = ["agent", "prompt", agent_name, &prompt, "--wait"];
-    let settled = match capture("herdr", &args, None) {
-        Ok(settled) => settled,
-        Err(error) if is_agent_prompt_stalled(&error) => {
-            eprintln!("recovered agent prompt stalled during startup; retrying once");
-            capture("herdr", &args, None)?
-        }
-        Err(error) => return Err(error),
-    };
+    let settled = prompt_agent(agent_name, &lane.pane_id, &prompt, "recovered startup")?;
     println!("{}", settled.trim_end());
     Ok(())
 }
 
-/// Probe the worker outcome and repeat a never-engaged prompt once.
-/// Command-specific classification and reaping happen in the caller.
-pub fn lane_settle(
-    repo: &Path,
-    bead: &ReadyBead,
-    prompt: &LanePrompt,
-) -> Result<BeadOutcome, String> {
-    let initial_outcome = probe_bead_outcome(repo, &bead.id)?;
-    if initial_outcome == BeadOutcome::NeverEngaged {
-        eprintln!("worker never engaged after startup prompt; retrying once");
-    }
-    let prompt_args = [
-        "agent",
-        "prompt",
-        &prompt.agent_name,
-        &prompt.prompt,
-        "--wait",
-    ];
-    let (retry_settled, outcome) = retry_never_engaged_once(
-        initial_outcome,
-        || capture("herdr", &prompt_args, None),
-        || probe_bead_outcome(repo, &bead.id),
-    )?;
-    if let Some(retry_settled) = retry_settled {
-        println!("{}", retry_settled.trim_end());
-    }
-
-    Ok(outcome)
+/// Probe the worker outcome after the shared prompt seam has completed its
+/// one allowed startup recovery.
+pub fn lane_settle(repo: &Path, bead: &ReadyBead) -> Result<BeadOutcome, String> {
+    probe_bead_outcome(repo, &bead.id)
 }
 
 /// Reap a completed lane, escalating a dirty-worktree refusal to force.
@@ -450,24 +466,6 @@ pub fn lane_reap_for_state(state: LaneState, lane: &Lane) -> Result<bool, String
             Ok(true)
         }
     }
-}
-
-pub fn retry_never_engaged_once<Reprompt, Reprobe>(
-    initial_outcome: BeadOutcome,
-    reprompt: Reprompt,
-    reprobe: Reprobe,
-) -> Result<(Option<String>, BeadOutcome), String>
-where
-    Reprompt: FnOnce() -> Result<String, String>,
-    Reprobe: FnOnce() -> Result<BeadOutcome, String>,
-{
-    if initial_outcome != BeadOutcome::NeverEngaged {
-        return Ok((None, initial_outcome));
-    }
-
-    let settled = reprompt()?;
-    let outcome = reprobe()?;
-    Ok((Some(settled), outcome))
 }
 
 pub fn retry_probe_once<T, Probe, Delay>(mut probe: Probe, delay: Delay) -> Result<T, String>
@@ -637,6 +635,25 @@ mod tests {
                 "{state:?} must remain warm"
             );
         }
+    }
+
+    #[test]
+    fn unsubmitted_prompt_requires_pasted_composer_and_untouched_context() {
+        let captured_race = "\
+• Ran herdr agent prompt ab-example <prompt> --wait\n\
+  └ agent_prompted\n\n\
+› [Pasted Content 1004 chars]\n\n\
+  gpt-5.6-sol high · Context 0% used\n";
+        assert!(has_unsubmitted_codex_prompt(captured_race));
+
+        let engaged_worker = captured_race.replace("Context 0% used", "Context 24% used");
+        assert!(!has_unsubmitted_codex_prompt(&engaged_worker));
+
+        let transcript_only = captured_race.replace(
+            "› [Pasted Content 1004 chars]",
+            "• Diagnosed a Pasted Content 1004 chars report",
+        );
+        assert!(!has_unsubmitted_codex_prompt(&transcript_only));
     }
 
     #[test]
