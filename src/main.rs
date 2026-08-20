@@ -19,8 +19,8 @@ use abacus::land::{
 };
 use abacus::lane::{
     LaneState, LaneStateInputs, MorningReport, PullRequestProbe, PullRequestState, capture,
-    derive_lane_state, lane_open, lane_prompt, lane_reap, lane_reap_blocked, lane_settle,
-    probe_bead_outcome,
+    derive_lane_state, lane_open, lane_prompt, lane_prompt_rework, lane_reap, lane_reap_for_state,
+    lane_recover, lane_settle, probe_bead_outcome,
 };
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
@@ -746,7 +746,7 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     Ok(0)
                 }
                 Some(LaneState::Merged) => {
-                    lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+                    lane_reap_for_state(LaneState::Merged, &settled.lane)?;
                     println!(
                         "bead {} lane is merged; reaped after {}",
                         settled.bead_id,
@@ -755,7 +755,7 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     Ok(0)
                 }
                 Some(LaneState::Blocked) => {
-                    lane_reap_blocked(&settled.lane)?;
+                    lane_reap_for_state(LaneState::Blocked, &settled.lane)?;
                     eprintln!(
                         "bead {} is in_progress; worker reported {} after {}",
                         settled.bead_id,
@@ -779,7 +779,21 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     }
                     Ok(3)
                 }
-                Some(state @ (LaneState::Authoring | LaneState::ReworkRequested)) => {
+                Some(LaneState::ReworkRequested) => {
+                    let adjudication = observation
+                        .pull_request
+                        .as_ref()
+                        .and_then(|pull_request| {
+                            latest_reviewed_adjudication(&pull_request.review_facts)
+                        })
+                        .ok_or_else(|| {
+                            "ReworkRequested lane is missing its reviewed adjudication".to_owned()
+                        })?;
+                    let agent_name = sanitize_agent_name(&settled.bead_id);
+                    lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?;
+                    Ok(0)
+                }
+                Some(state @ LaneState::Authoring) => {
                     eprintln!(
                         "bead {} settled into parked lane state {state:?} after {}",
                         settled.bead_id,
@@ -902,12 +916,9 @@ fn lane_candidate_ids(
     listed_beads: Vec<ListedLaneBead>,
     all_status_beads: Vec<ListedLaneBead>,
     local_lane_branch_ids: &BTreeSet<String>,
+    agent_names: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut candidate_ids: BTreeSet<_> = listed_beads
-        .into_iter()
-        .filter(|bead| bead.status == "in_progress" || bead.status == "closed")
-        .map(|bead| bead.id)
-        .collect();
+    let mut candidate_ids: BTreeSet<_> = listed_beads.into_iter().map(|bead| bead.id).collect();
     let statuses: BTreeMap<_, _> = all_status_beads
         .into_iter()
         .map(|bead| (bead.id, bead.status))
@@ -922,6 +933,17 @@ fn lane_candidate_ids(
             })
             .cloned(),
     );
+    candidate_ids.extend(
+        statuses
+            .keys()
+            .filter(|bead_id| agent_names.contains(&sanitize_agent_name(bead_id)))
+            .cloned(),
+    );
+    candidate_ids.retain(|bead_id| {
+        statuses
+            .get(bead_id)
+            .is_some_and(|status| status == "in_progress" || status == "closed")
+    });
     candidate_ids
 }
 
@@ -966,14 +988,27 @@ fn sweep_live_lanes(
         &["list", "--json", "--status", "all"],
         Some(repo),
     )?)?;
-    let bead_ids = lane_candidate_ids(listed_beads, all_status_beads, &local_lane_branch_ids);
-    let mut authoring = false;
+    let agent_names = agents
+        .iter()
+        .filter_map(|agent| agent.name.clone())
+        .collect();
+    let bead_ids = lane_candidate_ids(
+        listed_beads,
+        all_status_beads,
+        &local_lane_branch_ids,
+        &agent_names,
+    );
+    let mut serial_lane_active = false;
     for bead_id in bead_ids {
         if absorbed_terminal_beads.contains(&bead_id) {
             continue;
         }
         let outcome = probe_bead_outcome(repo, &bead_id)?;
         let bead_is_closed = outcome == abacus::BeadOutcome::Completed;
+        // Agent names are intentionally deterministic but lossy: uppercase and
+        // every unsupported byte map to '-', so collisions are theoretically
+        // possible. Real br ids are lowercase and stay inside the accepted
+        // grammar; keep this derivation adjacent to the lookup.
         let agent_name = sanitize_agent_name(&bead_id);
         let agent = agents
             .iter()
@@ -1012,9 +1047,12 @@ fn sweep_live_lanes(
         if state == Some(LaneState::Merged) || (bead_is_closed && state.is_none()) {
             absorbed_terminal_beads.insert(bead_id);
         }
-        authoring |= state == Some(LaneState::Authoring);
+        serial_lane_active |= matches!(
+            state,
+            Some(LaneState::Authoring | LaneState::ReworkRequested)
+        );
     }
-    Ok(authoring)
+    Ok(serial_lane_active)
 }
 
 #[derive(serde::Deserialize)]
@@ -1125,7 +1163,7 @@ fn probe_pull_request(repo: &Path, branch: &str) -> Result<Option<PullRequestObs
 
 fn record_drain_settle(
     repo: &Path,
-    settled: SettledLane,
+    mut settled: SettledLane,
     worker_active: bool,
     agents: &[AgentView],
     launched_reviewers: &mut BTreeSet<(String, u32)>,
@@ -1133,8 +1171,18 @@ fn record_drain_settle(
     reported_states: &mut BTreeSet<(String, String)>,
 ) -> Result<Option<LaneState>, String> {
     let observation = derive_settled_lane_state(repo, &settled, worker_active)?;
-    reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
     let state = observation.state;
+    if !settled.lane_available
+        && matches!(
+            state,
+            Some(LaneState::AwaitingReview | LaneState::ReworkRequested | LaneState::Stalled)
+        )
+    {
+        let agent_name = sanitize_agent_name(&settled.bead_id);
+        settled.lane = lane_recover(&repo.to_string_lossy(), &settled.bead_id, &agent_name)?;
+        settled.lane_available = true;
+    }
+    reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
     if state.is_none() {
         let key = (settled.bead_id.clone(), "completed".to_owned());
         if reported_states.insert(key) {
@@ -1153,15 +1201,21 @@ fn record_drain_settle(
     if !reported_states.insert(key) {
         return Ok(Some(state));
     }
+    if state == LaneState::ReworkRequested {
+        let adjudication = observation
+            .pull_request
+            .as_ref()
+            .and_then(|pull_request| latest_reviewed_adjudication(&pull_request.review_facts))
+            .ok_or_else(|| {
+                "ReworkRequested lane is missing its reviewed adjudication".to_owned()
+            })?;
+        let agent_name = sanitize_agent_name(&settled.bead_id);
+        lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?;
+    }
     match state {
-        LaneState::Blocked => {
+        LaneState::Blocked | LaneState::Merged => {
             if settled.lane_available {
-                lane_reap_blocked(&settled.lane)?;
-            }
-        }
-        LaneState::Merged => {
-            if settled.lane_available {
-                lane_reap(abacus::BeadOutcome::Completed, &settled.lane)?;
+                lane_reap_for_state(state, &settled.lane)?;
             }
         }
         LaneState::AwaitingReview => {}
@@ -1602,6 +1656,18 @@ mod tests {
         ];
         let all_status_beads = vec![
             ListedLaneBead {
+                id: "ab-in-progress".into(),
+                status: "in_progress".into(),
+            },
+            ListedLaneBead {
+                id: "ab-listed-closed".into(),
+                status: "deferred".into(),
+            },
+            ListedLaneBead {
+                id: "ab-agent-only".into(),
+                status: "closed".into(),
+            },
+            ListedLaneBead {
                 id: "ab-closed".into(),
                 status: "closed".into(),
             },
@@ -1625,12 +1691,17 @@ mod tests {
             "ab-future".to_owned(),
         ]);
 
+        let agent_names = BTreeSet::from([
+            sanitize_agent_name("ab-agent-only"),
+            "rev-ab-closed-c1".to_owned(),
+        ]);
+
         assert_eq!(
-            lane_candidate_ids(listed_beads, all_status_beads, &lane_branches),
+            lane_candidate_ids(listed_beads, all_status_beads, &lane_branches, &agent_names,),
             BTreeSet::from([
+                "ab-agent-only".to_owned(),
                 "ab-closed".to_owned(),
                 "ab-in-progress".to_owned(),
-                "ab-listed-closed".to_owned(),
             ])
         );
     }

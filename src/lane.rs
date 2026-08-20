@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::review::{Adjudication, FindingDisposition};
 use crate::{
     BeadOutcome, Lane, ReadyBead, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
     is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created, should_reap_lane,
@@ -19,6 +20,24 @@ pub enum LaneState {
     ReworkRequested,
     Merged,
     Stalled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneReapPolicy {
+    Never,
+    CleanOnly,
+    ForceAllowed,
+}
+
+pub fn lane_reap_policy(state: LaneState) -> LaneReapPolicy {
+    match state {
+        LaneState::Merged => LaneReapPolicy::ForceAllowed,
+        LaneState::Blocked => LaneReapPolicy::CleanOnly,
+        LaneState::Authoring
+        | LaneState::AwaitingReview
+        | LaneState::ReworkRequested
+        | LaneState::Stalled => LaneReapPolicy::Never,
+    }
 }
 
 impl LaneState {
@@ -174,9 +193,8 @@ pub struct LanePrompt {
     prompt: String,
 }
 
-/// Open the lane worktree and start its Codex worker.
-pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<Lane, String> {
-    let branch = format!("lane/{}", bead.id);
+fn open_lane_worktree(repo_str: &str, bead_id: &str) -> Result<Lane, String> {
+    let branch = format!("lane/{bead_id}");
     let created = capture(
         "herdr",
         &[
@@ -187,7 +205,7 @@ pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<L
             "--branch",
             &branch,
             "--label",
-            &bead.id,
+            bead_id,
             "--no-focus",
         ],
         None,
@@ -197,7 +215,10 @@ pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<L
         "lane open: workspace {} pane {} at {}",
         lane.workspace_id, lane.pane_id, lane.checkout_path
     );
+    Ok(lane)
+}
 
+fn start_lane_agent(lane: &Lane, agent_name: &str) -> Result<(), String> {
     capture(
         "herdr",
         &[
@@ -212,6 +233,25 @@ pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<L
         None,
     )?;
     println!("codex worker started as agent {agent_name}");
+    Ok(())
+}
+
+/// Open the lane worktree and start its Codex worker.
+pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<Lane, String> {
+    let lane = open_lane_worktree(repo_str, &bead.id)?;
+    start_lane_agent(&lane, agent_name)?;
+    Ok(lane)
+}
+
+/// Recreate a vanished warm lane on its durable, already-existing branch.
+///
+/// Live verification on 2026-08-20 proved Herdr reuses the exact branch when
+/// invoked from the parent repository workspace, so no suffixed recovery
+/// branch or manual git-worktree fallback is needed.
+pub fn lane_recover(repo_str: &str, bead_id: &str, agent_name: &str) -> Result<Lane, String> {
+    let lane = open_lane_worktree(repo_str, bead_id)?;
+    start_lane_agent(&lane, agent_name)?;
+    println!("warm lane recovered for {bead_id} on {}", lane.branch);
     Ok(lane)
 }
 
@@ -246,6 +286,51 @@ pub fn lane_prompt(
         agent_name: agent_name.to_owned(),
         prompt,
     })
+}
+
+pub fn rework_prompt(bead_id: &str, branch: &str, adjudication: &Adjudication) -> String {
+    let accepted_findings = adjudication
+        .findings
+        .iter()
+        .filter(|finding| finding.disposition == FindingDisposition::Accepted)
+        .map(|finding| {
+            format!(
+                "- Finding {} destination {}: {}",
+                finding.finding_number, finding.context, finding.prose
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Resume work on bead {bead_id} in the existing warm lane.\n\
+         Stay on branch {branch}; update its existing pull request in place. Do not create a new \
+         branch, worktree, or pull request.\n\
+         The adjudicated head is {}.\n\
+         Apply the accepted findings below, including each stated destination, then run the bead's \
+         required verification, commit, push this same branch, and return the PR to review.\n\
+         {accepted_findings}",
+        adjudication.adjudicated_head
+    )
+}
+
+pub fn lane_prompt_rework(
+    bead_id: &str,
+    lane: &Lane,
+    agent_name: &str,
+    adjudication: &Adjudication,
+) -> Result<(), String> {
+    let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
+    let args = ["agent", "prompt", agent_name, &prompt, "--wait"];
+    let settled = match capture("herdr", &args, None) {
+        Ok(settled) => settled,
+        Err(error) if is_agent_prompt_stalled(&error) => {
+            eprintln!("recovered agent prompt stalled during startup; retrying once");
+            capture("herdr", &args, None)?
+        }
+        Err(error) => return Err(error),
+    };
+    println!("{}", settled.trim_end());
+    Ok(())
 }
 
 /// Probe the worker outcome and repeat a never-engaged prompt once.
@@ -326,6 +411,17 @@ pub fn lane_reap_blocked(lane: &Lane) -> Result<bool, String> {
             Ok(false)
         }
         Err(error) => Err(error),
+    }
+}
+
+pub fn lane_reap_for_state(state: LaneState, lane: &Lane) -> Result<bool, String> {
+    match lane_reap_policy(state) {
+        LaneReapPolicy::Never => Ok(false),
+        LaneReapPolicy::CleanOnly => lane_reap_blocked(lane),
+        LaneReapPolicy::ForceAllowed => {
+            lane_reap(BeadOutcome::Completed, lane)?;
+            Ok(true)
+        }
     }
 }
 
@@ -490,6 +586,30 @@ mod tests {
             LaneState::AwaitingReview,
             "a new head proves rework happened and needs another review"
         );
+    }
+
+    #[test]
+    fn reap_policy_by_lane_state() {
+        assert_eq!(
+            lane_reap_policy(LaneState::Merged),
+            LaneReapPolicy::ForceAllowed
+        );
+        assert_eq!(
+            lane_reap_policy(LaneState::Blocked),
+            LaneReapPolicy::CleanOnly
+        );
+        for state in [
+            LaneState::Authoring,
+            LaneState::AwaitingReview,
+            LaneState::ReworkRequested,
+            LaneState::Stalled,
+        ] {
+            assert_eq!(
+                lane_reap_policy(state),
+                LaneReapPolicy::Never,
+                "{state:?} must remain warm"
+            );
+        }
     }
 
     #[test]
