@@ -301,7 +301,11 @@ fn current_codex_context_percent(pane: &str) -> Option<u8> {
 }
 
 fn should_nudge_after_settle(baseline_context: Option<u8>, pane: &str) -> bool {
-    baseline_context.is_none() || current_codex_context_percent(pane) == baseline_context
+    let post_settle_context = current_codex_context_percent(pane);
+    match baseline_context {
+        Some(baseline) => post_settle_context == Some(baseline),
+        None => post_settle_context.is_none_or(|context| context == 0),
+    }
 }
 
 fn pasted_composer_is_visible(pane: &str) -> bool {
@@ -798,14 +802,18 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_baseline_fails_toward_recovery() {
+    fn unavailable_baseline_uses_post_settle_meter() {
         assert!(should_nudge_after_settle(
             None,
             "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n"
         ));
-        assert!(should_nudge_after_settle(
+        assert!(!should_nudge_after_settle(
             None,
             "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+        ));
+        assert!(should_nudge_after_settle(
+            None,
+            "Codex starting; status meter not rendered yet\n"
         ));
     }
 

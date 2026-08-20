@@ -1352,6 +1352,7 @@ fn run_rework_dispatch_sweep(
     ready_fresh_bead: bool,
     prompt_remains_pasted: bool,
     meterless_baseline: bool,
+    meterless_post_settle: bool,
 ) -> (std::process::Output, String, String) {
     let bead_id = "it-rework";
     let workspace = TempDir::new(tag);
@@ -1468,7 +1469,11 @@ elif [ "$1 $2" = "pane read" ]; then
       fi
     elif [ "{meterless_baseline}" = "true" ] && [ ! -f '{second_pane_read}' ]; then
       : > '{second_pane_read}'
-      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+      if [ "{meterless_post_settle}" = "true" ]; then
+        printf 'Codex starting; status meter not rendered yet\n'
+      else
+        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+      fi
     else
       printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24%% used\n'
     fi
@@ -1477,7 +1482,11 @@ elif [ "$1 $2" = "pane read" ]; then
       printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 25%% used\n'
     else
       : > '{first_pane_read}'
-      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+      if [ "{meterless_baseline}" = "true" ]; then
+        printf 'Codex starting; status meter not rendered yet\n'
+      else
+        printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+      fi
     fi
   fi
 elif [ "$1 $2 $3" = "agent send-keys {bead_id}" ]; then
@@ -1502,6 +1511,7 @@ fi
             second_pane_read = second_pane_read.display(),
             prompt_remains_pasted = prompt_remains_pasted,
             meterless_baseline = meterless_baseline,
+            meterless_post_settle = meterless_post_settle,
         ),
     )
     .unwrap();
@@ -1556,8 +1566,15 @@ fi
 
 #[test]
 fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
-    let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-existing-agent", true, false, false, false, false);
+    let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
+        "rework-existing-agent",
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+    );
 
     assert!(
         output.status.success(),
@@ -1599,8 +1616,15 @@ fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
 
 #[test]
 fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
-    let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-pasted-prompt", true, false, false, true, false);
+    let (output, herdr_calls, events) = run_rework_dispatch_sweep(
+        "rework-pasted-prompt",
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+    );
 
     assert!(
         output.status.success(),
@@ -1655,8 +1679,15 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
 
 #[test]
 fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
-    let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-meterless-baseline", true, false, false, true, true);
+    let (output, herdr_calls, events) = run_rework_dispatch_sweep(
+        "rework-meterless-baseline",
+        true,
+        false,
+        false,
+        true,
+        true,
+        true,
+    );
 
     assert!(
         output.status.success(),
@@ -1684,9 +1715,41 @@ fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
 }
 
 #[test]
+fn meterless_warm_rework_with_nonzero_post_settle_meter_is_engaged() {
+    let (output, herdr_calls, events) = run_rework_dispatch_sweep(
+        "rework-meterless-engaged",
+        true,
+        false,
+        false,
+        false,
+        true,
+        false,
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(events, "prompt-rework\n");
+    assert!(
+        !herdr_calls.contains("agent send-keys"),
+        "a nonzero post-settle meter proves engagement when the baseline was unavailable:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
-    let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-before-fresh", true, false, true, false, false);
+    let (output, herdr_calls, events) = run_rework_dispatch_sweep(
+        "rework-before-fresh",
+        true,
+        false,
+        true,
+        false,
+        false,
+        false,
+    );
 
     assert!(
         output.status.success(),
@@ -1708,8 +1771,15 @@ fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
 
 #[test]
 fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
-    let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-recover-agent", false, false, false, false, false);
+    let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
+        "rework-recover-agent",
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+    );
 
     assert!(
         output.status.success(),
@@ -1741,8 +1811,15 @@ fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
 
 #[test]
 fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
-    let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false, false, false);
+    let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
+        "rework-restart-workspace",
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+    );
 
     assert!(
         output.status.success(),
@@ -2003,7 +2080,9 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
              elif [ \"$1 $2\" = \"agent prompt\" ]; then printf 'reviewer settled\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
                if [ -f '{first_pane_read}' ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 25%% used\\n'\n\
-               else : > '{first_pane_read}'; printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'; fi\n\
+               else : > '{first_pane_read}'; printf 'Codex starting; status meter not rendered yet\\n'; fi\n\
+             elif [ \"$1 $2 $3\" = \"agent send-keys rev-it-review-status-c1\" ]; then exit 0\n\
+             elif [ \"$1 $2 $3\" = \"agent wait rev-it-review-status-c1\" ]; then printf 'reviewer never transitioned\\n' >&2; exit 1\n\
              elif [ \"$1 $2 $3\" = \"workspace close reviewer-workspace\" ]; then exit 0\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
             calls = herdr_calls.display(),
@@ -2105,6 +2184,10 @@ else printf 'unexpected gh call: %s\n' "$*" >&2; exit 2; fi
         );
     }
     let herdr_calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert!(
+        !herdr_calls.contains("agent send-keys rev-it-review-status-c1 Enter"),
+        "a successful meterless reviewer with nonzero post-settle context must not be nudged:\n{herdr_calls}"
+    );
     assert_eq!(
         herdr_calls
             .lines()
