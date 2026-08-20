@@ -28,6 +28,123 @@ fn make_executable(path: &Path) {
 }
 
 #[test]
+fn drain_never_claims_dispatches_or_reports_a_ready_epic() {
+    let workspace = TempDir::new("drain-ready-epic");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+
+    let br_calls = workspace.0.join("br-calls");
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let completed = workspace.0.join("completed");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{br_calls}'\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               if [ -f '{completed}' ]; then\n\
+                 printf '[{{\"id\":\"it-epic\",\"title\":\"planning parent\",\"priority\":0,\"issue_type\":\"epic\",\"labels\":[]}}]\\n'\n\
+               else\n\
+                 printf '[{{\"id\":\"it-epic\",\"title\":\"planning parent\",\"priority\":0,\"issue_type\":\"epic\",\"labels\":[]}},{{\"id\":\"it-worker\",\"title\":\"worker task\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
+               fi\n\
+             elif [ \"$1 $2 $3\" = \"update it-worker --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"show it-worker\" ]; then\n\
+               printf '[{{\"status\":\"closed\"}}]\\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\\n' \"$*\" >&2\n\
+               exit 2\n\
+             fi\n",
+            br_calls = br_calls.display(),
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{herdr_calls}'\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"worker-workspace\"}},\"root_pane\":{{\"pane_id\":\"worker-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/it-worker\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               : > '{completed}'\n\
+               printf 'worker settled\\n'\n\
+             fi\n",
+            herdr_calls = herdr_calls.display(),
+            root = workspace.0.display(),
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelif [ \"$1\" = \"for-each-ref\" ]; then\n  :\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+
+    for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let br_calls = std::fs::read_to_string(br_calls).unwrap();
+    assert!(
+        br_calls.contains("update it-worker --claim"),
+        "worker task was not claimed:\n{br_calls}"
+    );
+    assert!(
+        !br_calls.contains("update it-epic --claim"),
+        "epic was claimed:\n{br_calls}"
+    );
+    let herdr_calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert!(
+        herdr_calls.contains("--branch lane/it-worker"),
+        "worker lane was not dispatched:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls.contains("it-epic"),
+        "epic reached Herdr dispatch:\n{herdr_calls}"
+    );
+    assert!(
+        stdout.contains("completed: 1 [it-worker"),
+        "worker task was not reported completed: {stdout}"
+    );
+    assert!(
+        !stdout.contains("it-epic"),
+        "epic appeared in drain output/report: {stdout}"
+    );
+}
+
+#[test]
 fn drain_reselects_after_a_lost_claim_and_dispatches_the_next_bead() {
     let workspace = TempDir::new("drain-claim-race");
     let fake_bin = workspace.0.join("fake-bin");
@@ -49,9 +166,9 @@ fn drain_reselects_after_a_lost_claim_and_dispatches_the_next_bead() {
                if [ -f '{}' ]; then\n\
                  printf '[]\\n'\n\
                elif [ -f '{}' ]; then\n\
-                 printf '[{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+                 printf '[{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                else\n\
-                 printf '[{{\"id\":\"it-first\",\"title\":\"first bead\",\"priority\":0,\"labels\":[]}},{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+                 printf '[{{\"id\":\"it-first\",\"title\":\"first bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}},{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                fi\n\
              elif [ \"$1 $2 $3\" = \"update it-first --claim\" ]; then\n\
                : > '{}'\n\
@@ -170,7 +287,7 @@ fn drain_never_probes_a_deferred_list_row_backed_by_a_lane_branch() {
                if [ -f '{completed}' ]; then\n\
                  printf '[]\\n'\n\
                else\n\
-                 printf '[{{\"id\":\"it-ready\",\"title\":\"ready worker\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+                 printf '[{{\"id\":\"it-ready\",\"title\":\"ready worker\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                fi\n\
              elif [ \"$1 $2 $3\" = \"update it-ready --claim\" ]; then\n\
                exit 0\n\
@@ -292,9 +409,9 @@ fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
                if [ -f '{completed}' ]; then\n\
                  printf '[]\\n'\n\
                elif [ -f '{blocked}' ]; then\n\
-                 printf '[{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+                 printf '[{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                else\n\
-                 printf '[{{\"id\":\"it-first\",\"title\":\"first bead\",\"priority\":0,\"labels\":[]}},{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+                 printf '[{{\"id\":\"it-first\",\"title\":\"first bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}},{{\"id\":\"it-second\",\"title\":\"second bead\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                fi\n\
              elif [ \"$1\" = \"update\" ] && [ \"$3\" = \"--claim\" ]; then\n\
                printf '%s\\n' \"$2\" > '{active_bead}'\n\
@@ -424,7 +541,7 @@ fn drain_records_awaiting_review_and_exits_when_nothing_is_actionable() {
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
-               if [ -f '{settled}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-review\",\"title\":\"review bead\",\"priority\":0,\"labels\":[]}}]\\n'; fi\n\
+               if [ -f '{settled}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-review\",\"title\":\"review bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-review --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"show it-review\" ]; then\n\
@@ -517,7 +634,7 @@ fn run_classifies_closed_open_pr_as_awaiting_review_and_keeps_lane_warm() {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"ready\" ]; then\n\
-               if [ -f '{settled}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-run-review\",\"title\":\"run review bead\",\"priority\":0,\"labels\":[]}}]\\n'; fi\n\
+               if [ -f '{settled}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-run-review\",\"title\":\"run review bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-run-review --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"show it-run-review\" ]; then\n\
@@ -621,7 +738,7 @@ fn restart_sweep_reports_absent_in_progress_agent_as_stalled_and_continues() {
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[{{\"id\":\"it-stalled\",\"status\":\"in_progress\"}}]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
-               if [ -f '{completed}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-next\",\"title\":\"next bead\",\"priority\":0,\"labels\":[]}}]\\n'; fi\n\
+               if [ -f '{completed}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-next\",\"title\":\"next bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-next --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"show it-stalled\" ]; then\n\
@@ -717,7 +834,7 @@ fn run_absent_closed_pr_sweep(
     let herdr_calls = workspace.0.join("herdr-calls");
     let gh_calls = workspace.0.join("gh-calls");
     let ready_json = if force_resweep {
-        r#"[{"id":"it-lost","title":"lost claim","priority":0,"labels":[]}]"#
+        r#"[{"id":"it-lost","title":"lost claim","priority":0,"issue_type":"task","labels":[]}]"#
     } else {
         "[]"
     };
@@ -917,7 +1034,7 @@ fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
              if [ \"$1\" = \"ready\" ]; then\n\
-               printf '[{{\"id\":\"{bead_id}\",\"title\":\"reopened rework\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+               printf '[{{\"id\":\"{bead_id}\",\"title\":\"reopened rework\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
              elif [ \"$1 $2 $3\" = \"update {bead_id} --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
@@ -1030,7 +1147,7 @@ fn run_skips_existing_lane_pending_review(comments: &str, tag: &str) {
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
              if [ \"$1\" = \"ready\" ]; then\n\
-               printf '[{{\"id\":\"{existing_bead}\",\"title\":\"existing lane\",\"priority\":0,\"labels\":[]}},{{\"id\":\"{fresh_bead}\",\"title\":\"fresh work\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+               printf '[{{\"id\":\"{existing_bead}\",\"title\":\"existing lane\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}},{{\"id\":\"{fresh_bead}\",\"title\":\"fresh work\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
              elif [ \"$1 $2 $3\" = \"update {existing_bead} --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2 $3\" = \"update {fresh_bead} --claim\" ]; then\n\
@@ -1172,7 +1289,7 @@ fn run_rework_dispatch_sweep(
     let fresh_completed = workspace.0.join("fresh-completed");
 
     let ready = if ready_fresh_bead {
-        r#"[{"id":"it-fresh","title":"fresh work","priority":0,"labels":[]}]"#
+        r#"[{"id":"it-fresh","title":"fresh work","priority":0,"issue_type":"task","labels":[]}]"#
     } else {
         "[]"
     };
@@ -1468,7 +1585,7 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
              elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
-               printf '%s\\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
+               printf '%s\\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]'\n\
              elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
                printf 'fixture claim loss\\n' >&2; exit 1\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
@@ -1609,9 +1726,9 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
                printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                IFS= read -r current_phase < '{phase}'\n\
-               if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
-               elif [ \"$current_phase\" = \"2\" ]; then printf '[{{\"id\":\"it-phase-2\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
-               elif [ \"$current_phase\" = \"3\" ]; then printf '[{{\"id\":\"it-phase-3\",\"title\":\"advance\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+               if [ \"$current_phase\" = \"1\" ]; then printf '[{{\"id\":\"it-phase-1\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
+               elif [ \"$current_phase\" = \"2\" ]; then printf '[{{\"id\":\"it-phase-2\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
+               elif [ \"$current_phase\" = \"3\" ]; then printf '[{{\"id\":\"it-phase-3\",\"title\":\"advance\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
                else printf '[]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-phase-1 --claim\" ]; then\n\
                printf '2\\n' > '{phase}'; printf 'fixture phase advance\\n' >&2; exit 1\n\
@@ -1818,7 +1935,7 @@ fn run_merged_pr_sweep(
              elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '%s\n' '{listed_beads}'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
-               printf '%s\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
+               printf '%s\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]'\n\
              elif [ \"$1 $2 $3\" = \"update it-lost --claim\" ]; then\n\
                printf 'fixture claim loss\n' >&2; exit 1\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
@@ -1976,7 +2093,7 @@ fn a_dirty_blocked_lane_is_left_standing_and_reported() {
              if [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
-               if [ -f '{blocked}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-blocked\",\"title\":\"blocked bead\",\"priority\":0,\"labels\":[]}}]\\n'; fi\n\
+               if [ -f '{blocked}' ]; then printf '[]\\n'; else printf '[{{\"id\":\"it-blocked\",\"title\":\"blocked bead\",\"priority\":0,\"issue_type\":\"task\",\"labels\":[]}}]\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-blocked --claim\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"show it-blocked\" ]; then\n\

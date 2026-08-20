@@ -30,6 +30,7 @@ pub fn format_lane_duration(secs: u64) -> String {
 pub struct ReadyBead {
     pub id: String,
     pub title: String,
+    pub issue_type: String,
     #[serde(default = "default_priority")]
     pub priority: i64,
     #[serde(default)]
@@ -49,7 +50,10 @@ pub fn parse_ready(json: &str) -> Result<Vec<ReadyBead>, String> {
 pub fn select_bead(beads: &[ReadyBead]) -> Option<&ReadyBead> {
     beads
         .iter()
-        .filter(|bead| !bead.labels.iter().any(|label| label == OPERATOR_SEAT_LABEL))
+        .filter(|bead| {
+            bead.issue_type != "epic"
+                && !bead.labels.iter().any(|label| label == OPERATOR_SEAT_LABEL)
+        })
         .min_by_key(|bead| bead.priority)
 }
 
@@ -353,6 +357,7 @@ mod tests {
         let beads = parse_ready(BR_READY_FIXTURE).unwrap();
         assert_eq!(beads.len(), 1);
         assert_eq!(beads[0].id, "abacus-vkd");
+        assert_eq!(beads[0].issue_type, "task");
         assert_eq!(beads[0].labels, ["documentation"]);
         assert_eq!(beads[0].priority, 2);
         assert_eq!(
@@ -376,9 +381,9 @@ mod tests {
     fn selection_prefers_lowest_priority_number_then_br_order() {
         let beads = parse_ready(
             r#"[
-              {"id":"abacus-aaa","title":"later","priority":2},
-              {"id":"abacus-bbb","title":"urgent","priority":1},
-              {"id":"abacus-ccc","title":"urgent too","priority":1}
+              {"id":"abacus-aaa","title":"later","issue_type":"task","priority":2},
+              {"id":"abacus-bbb","title":"urgent","issue_type":"task","priority":1},
+              {"id":"abacus-ccc","title":"urgent too","issue_type":"task","priority":1}
             ]"#,
         )
         .unwrap();
@@ -389,8 +394,22 @@ mod tests {
     fn selection_skips_operator_seat_beads_from_ready_labels() {
         let beads = parse_ready(
             r#"[
-              {"id":"abacus-operator","title":"operator milestone","priority":0,"labels":["seat:operator"]},
-              {"id":"abacus-worker","title":"worker task","priority":1}
+              {"id":"abacus-operator","title":"operator milestone","issue_type":"task","priority":0,"labels":["seat:operator"]},
+              {"id":"abacus-worker","title":"worker task","issue_type":"task","priority":1}
+            ]"#,
+        )
+        .unwrap();
+
+        assert_eq!(select_bead(&beads).unwrap().id, "abacus-worker");
+        assert!(select_bead(&beads[..1]).is_none());
+    }
+
+    #[test]
+    fn selection_skips_ready_epics() {
+        let beads = parse_ready(
+            r#"[
+              {"id":"abacus-parent","title":"planning parent","priority":0,"issue_type":"epic","labels":[]},
+              {"id":"abacus-worker","title":"worker task","priority":1,"issue_type":"task","labels":[]}
             ]"#,
         )
         .unwrap();
@@ -401,7 +420,7 @@ mod tests {
 
     #[test]
     fn missing_priority_defaults_to_two() {
-        let beads = parse_ready(r#"[{"id":"abacus-x","title":"t"}]"#).unwrap();
+        let beads = parse_ready(r#"[{"id":"abacus-x","title":"t","issue_type":"task"}]"#).unwrap();
         assert_eq!(beads[0].priority, 2);
     }
 
