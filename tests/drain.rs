@@ -846,7 +846,7 @@ fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
 #[test]
 fn owner_acceptance_without_matching_verdict_stays_awaiting_and_launches_reviewer() {
     let bead_id = "it-unreviewed-acceptance";
-    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{"login":"repository-owner"},"authorAssociation":"OWNER"}]}"####;
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{"login":"DylanDelliColli"},"authorAssociation":"OWNER"}]}"####;
     let (output, herdr_calls, gh_calls) =
         run_absent_closed_pr_sweep("unreviewed-owner-acceptance", bead_id, pull_request, false);
 
@@ -877,7 +877,7 @@ fn owner_acceptance_without_matching_verdict_stays_awaiting_and_launches_reviewe
 #[test]
 fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
     let bead_id = "it-unreviewed-rework";
-    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Premature ruling.\n\nFinding 1 (blocker — missing reviewer verdict): ACCEPTED. This ruling is inert.\n\nAdjudicated head: review-head","author":{"login":"repository-owner"},"authorAssociation":"OWNER"}]}"####;
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Premature ruling.\n\nFinding 1 (blocker — missing reviewer verdict): ACCEPTED. This ruling is inert.\n\nAdjudicated head: review-head","author":{"login":"DylanDelliColli"},"authorAssociation":"OWNER"}]}"####;
     let (output, herdr_calls, _gh_calls) =
         run_absent_closed_pr_sweep("unreviewed-owner-rework", bead_id, pull_request, false);
 
@@ -898,6 +898,33 @@ fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
     assert!(
         herdr_calls.contains("agent start rev-it-unreviewed-rework-c1"),
         "the inert cycle-1 rework ruling suppressed or advanced the reviewer launch:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn member_rework_on_the_reviewed_head_launches_cycle_two_after_the_head_moves() {
+    let bead_id = "it-member-reworked";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"reworked-head","number":37,"comments":[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"NONE"},{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::next_reviewer_cycle): ACCEPTED. Launch cycle 2 after the author moves the head.\n\nAdjudicated head: reviewed-head","author":{"login":"DylanDelliColli"},"authorAssociation":"MEMBER"}]}"####;
+    let (output, herdr_calls, _gh_calls) =
+        run_absent_closed_pr_sweep("member-rework-cycle-two", bead_id, pull_request, false);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the moved head did not return the lane to AwaitingReview: {stdout}"
+    );
+    assert!(
+        herdr_calls.contains("agent start rev-it-member-reworked-c2"),
+        "the MEMBER adjudication did not advance the reviewer cycle:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls.contains("agent start rev-it-member-reworked-c1"),
+        "the MEMBER adjudication was ignored and cycle 1 relaunched:\n{herdr_calls}"
     );
 }
 
@@ -953,7 +980,7 @@ fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
             r####"#!/bin/sh
 printf '%s\n' "$*" >> '{calls}'
 if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
-  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"reviewed-head","number":37,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::dispatch_cycle): ACCEPTED. Route before fresh dispatch.\n\nAdjudicated head: reviewed-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'
+  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"reviewed-head","number":37,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::dispatch_cycle): ACCEPTED. Route before fresh dispatch.\n\nAdjudicated head: reviewed-head","author":{{"login":"DylanDelliColli"}},"authorAssociation":"OWNER"}}]}}'
 else
   printf 'unexpected gh call: %s\n' "$*" >&2; exit 2
 fi
@@ -1285,7 +1312,7 @@ fi
             r####"#!/bin/sh
 if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
   if [ -f '{rework_prompted}' ]; then head='new-head'; else head='reviewed-head'; fi
-  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"'"$head"'","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::sweep_live_lanes): ACCEPTED. Preserve the same warm agent and branch.\n\nFinding 2 (dismissed path): REJECTED. Do not include this in the rework spec.\n\nAdjudicated head: reviewed-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'
+  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"'"$head"'","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::sweep_live_lanes): ACCEPTED. Preserve the same warm agent and branch.\n\nFinding 2 (dismissed path): REJECTED. Do not include this in the rework spec.\n\nAdjudicated head: reviewed-head","author":{{"login":"DylanDelliColli"}},"authorAssociation":"OWNER"}}]}}'
 elif [ "$1 $2 $3" = "pr view lane/it-fresh" ]; then
   printf 'no pull requests found for branch\n' >&2; exit 1
 else
@@ -1663,8 +1690,8 @@ if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
   if [ "$5" = "number" ]; then printf '42\n'
   elif [ "$current_phase" = "1" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[]}}'
   elif [ "$current_phase" = "2" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 2\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{{"login":"accepted-forger"}},"authorAssociation":"MEMBER"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Forged rework request.\n\nFinding 1 (blocker — forged ruling): ACCEPTED. This must not affect lane state.\n\nAdjudicated head: review-head","author":{{"login":"rework-forger"}},"authorAssociation":"COLLABORATOR"}}]}}'
-  elif [ "$current_phase" = "3" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'
-  else printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}},{{"body":"## Adversarial review — cycle 2\n\nVERDICT: NOT REFUTED","author":{{"login":"second-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 2\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'; fi
+  elif [ "$current_phase" = "3" ]; then printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"NONE"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"DylanDelliColli"}},"authorAssociation":"MEMBER"}}]}}'
+  else printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{{"body":"## Adversarial review — cycle 1\n\nVERDICT: REFUTED","author":{{"login":"outside-reviewer"}},"authorAssociation":"NONE"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Authorized rework request.\n\nFinding 1 (blocker — verified ruling): ACCEPTED. Rework is required.\n\nAdjudicated head: review-head","author":{{"login":"DylanDelliColli"}},"authorAssociation":"MEMBER"}},{{"body":"## Adversarial review — cycle 2\n\nVERDICT: NOT REFUTED","author":{{"login":"second-reviewer"}},"authorAssociation":"NONE"}},{{"body":"## Adjudication — cycle 2\n\nVerdict accepted: NOT REFUTED.\n\nAdjudicated head: review-head","author":{{"login":"DylanDelliColli"}},"authorAssociation":"MEMBER"}}]}}'; fi
 elif [ "$1" = "api" ] && [ "$2" = "repos/{{owner}}/{{repo}}/commits/review-head/status" ]; then
   if [ -f '{posted_status}' ]; then IFS= read -r state < '{posted_status}'; printf '{{"state":"%s","statuses":[{{"state":"%s","context":"adversarial-review"}}],"total_count":1}}\n' "$state" "$state"
   else printf '%s\n' '{{"state":"pending","statuses":[],"total_count":0}}'; fi

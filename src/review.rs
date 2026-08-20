@@ -27,8 +27,8 @@ pub const FINDING_DISPOSITION_SEPARATOR: &str = "): ";
 pub const FINDING_ACCEPTED_DISPOSITION: &str = "ACCEPTED";
 pub const FINDING_REJECTED_DISPOSITION: &str = "REJECTED";
 pub const ADJUDICATED_HEAD_PREFIX: &str = "Adjudicated head: ";
-pub const AUTHORIZED_ADJUDICATOR_ASSOCIATION: &str = "OWNER";
-pub const AUTHORIZED_ADJUDICATOR_LOGINS: &[&str] = &[];
+pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER"];
+pub const AUTHORIZED_ADJUDICATOR_LOGINS: &[&str] = &["DylanDelliColli"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdjudicationVerdict {
@@ -189,8 +189,8 @@ pub fn parse_review_comment(body: &str) -> Result<ParsedReviewComment, String> {
 }
 
 fn is_authorized_adjudicator(comment: ReviewComment<'_>) -> bool {
-    comment.author_association == AUTHORIZED_ADJUDICATOR_ASSOCIATION
-        || AUTHORIZED_ADJUDICATOR_LOGINS.contains(&comment.author_login)
+    AUTHORIZED_ADJUDICATOR_ASSOCIATIONS.contains(&comment.author_association)
+        && AUTHORIZED_ADJUDICATOR_LOGINS.contains(&comment.author_login)
 }
 
 pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewCommentFacts, String> {
@@ -735,7 +735,7 @@ mod tests {
             ReviewComment {
                 body: reviewer_body,
                 author_login: "outside-reviewer",
-                author_association: "CONTRIBUTOR",
+                author_association: "NONE",
             },
             ReviewComment {
                 body: accepted.body,
@@ -744,13 +744,13 @@ mod tests {
             },
             ReviewComment {
                 body: rework.body,
-                author_login: "forger",
+                author_login: "DylanDelliColli",
                 author_association: "COLLABORATOR",
             },
             ReviewComment {
                 body: "## Adjudication — cycle not-a-number\n\nmalformed",
-                author_login: "forger",
-                author_association: "MEMBER",
+                author_login: "DylanDelliColli",
+                author_association: "NONE",
             },
         ])
         .unwrap();
@@ -760,7 +760,7 @@ mod tests {
 
         let authorized = review_comment_facts(&[ReviewComment {
             body: accepted.body,
-            author_login: "repository-owner",
+            author_login: "DylanDelliColli",
             author_association: "OWNER",
         }])
         .unwrap();
@@ -769,6 +769,27 @@ mod tests {
             AdjudicationVerdict::Accepted
         );
     }
+
+    #[test]
+    fn allowlisted_member_adjudication_is_authorized() {
+        let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
+            .unwrap();
+
+        let facts = review_comment_facts(&[ReviewComment {
+            body: accepted.body,
+            author_login: "DylanDelliColli",
+            author_association: "MEMBER",
+        }])
+        .unwrap();
+
+        assert_eq!(
+            facts.latest_adjudication.unwrap().verdict,
+            AdjudicationVerdict::Accepted
+        );
+    }
+
     #[test]
     fn parses_the_captured_accepted_adjudication() {
         let captured = CAPTURED_PRODUCTION_ADJUDICATIONS
@@ -845,12 +866,12 @@ mod tests {
         let facts = review_comment_facts(&[
             ReviewComment {
                 body: cycle_four.body,
-                author_login: "repository-owner",
+                author_login: "DylanDelliColli",
                 author_association: "OWNER",
             },
             ReviewComment {
                 body: cycle_one.body,
-                author_login: "repository-owner",
+                author_login: "DylanDelliColli",
                 author_association: "OWNER",
             },
         ])
@@ -987,8 +1008,8 @@ mod tests {
         assert_eq!(FINDING_DISPOSITION_SEPARATOR, "): ");
         assert_eq!(FINDING_ACCEPTED_DISPOSITION, "ACCEPTED");
         assert_eq!(FINDING_REJECTED_DISPOSITION, "REJECTED");
-        assert_eq!(AUTHORIZED_ADJUDICATOR_ASSOCIATION, "OWNER");
-        assert_eq!(AUTHORIZED_ADJUDICATOR_LOGINS, &[] as &[&str]);
+        assert_eq!(AUTHORIZED_ADJUDICATOR_ASSOCIATIONS, &["OWNER", "MEMBER"]);
+        assert_eq!(AUTHORIZED_ADJUDICATOR_LOGINS, &["DylanDelliColli"]);
     }
 
     #[test]
