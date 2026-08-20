@@ -560,7 +560,9 @@ pub fn launch_reviewer(
         &path_arg,
         "reviewer startup",
     )? {
-        PromptOutcome::Settled(_) => Ok(ReviewerLaunch::Engaged(path)),
+        PromptOutcome::Settled(_) | PromptOutcome::TrackerObserved { .. } => {
+            Ok(ReviewerLaunch::Engaged(path))
+        }
         PromptOutcome::NeverEngaged { .. } => {
             capture(
                 "herdr",

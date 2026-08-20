@@ -276,35 +276,116 @@ pub fn lane_open_existing_worktree(
     Ok(lane)
 }
 
-fn has_unsubmitted_codex_prompt(pane: &str) -> bool {
-    let tail = pane.lines().rev().take(12).collect::<Vec<_>>();
-    let pasted_composer = tail.iter().any(|line| {
+fn current_codex_context_percent(pane: &str) -> Option<u8> {
+    pane.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let model = line.split_whitespace().next()?;
+        let model_identity = model
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+            && model
+                .chars()
+                .any(|character| character.is_ascii_alphabetic())
+            && model.chars().any(|character| character.is_ascii_digit());
+        if !model_identity {
+            return None;
+        }
+
+        let (_, context) = line.rsplit_once(" · Context ")?;
+        let (percent, suffix) = context.split_once("% used")?;
+        if !suffix.is_empty() && !suffix.starts_with(" · ") {
+            return None;
+        }
+        percent.parse().ok()
+    })
+}
+
+const CONTEXT_METER_SAMPLE_ATTEMPTS: usize = 3;
+const CONTEXT_METER_SAMPLE_DELAY: Duration = Duration::from_millis(50);
+
+fn sample_codex_context_percent(pane_id: &str) -> Result<(Option<u8>, String), String> {
+    let mut pane = String::new();
+    for attempt in 0..CONTEXT_METER_SAMPLE_ATTEMPTS {
+        pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
+        if let Some(context) = current_codex_context_percent(&pane) {
+            return Ok((Some(context), pane));
+        }
+        if attempt + 1 < CONTEXT_METER_SAMPLE_ATTEMPTS {
+            std::thread::sleep(CONTEXT_METER_SAMPLE_DELAY);
+        }
+    }
+    Ok((None, pane))
+}
+
+fn should_nudge_after_settle(
+    baseline_context: Option<u8>,
+    post_settle_context: Option<u8>,
+) -> bool {
+    match post_settle_context {
+        Some(post_settle) => match baseline_context {
+            Some(baseline) => post_settle == baseline,
+            None => post_settle == 0,
+        },
+        None => true,
+    }
+}
+
+fn pasted_composer_is_visible(pane: &str) -> bool {
+    pane.lines().rev().take(12).any(|line| {
         let line = line.trim_start();
         line.starts_with('›') && line.contains("Pasted Content") && line.contains("chars")
-    });
-    let untouched_context = tail.iter().any(|line| line.contains("Context 0% used"));
-    pasted_composer && untouched_context
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptOutcome {
     Settled(String),
-    NeverEngaged { error: String },
+    TrackerObserved {
+        settled: String,
+        outcome: BeadOutcome,
+    },
+    NeverEngaged {
+        error: String,
+    },
 }
 
 /// Prompt an agent through the shared startup-race seam.
 ///
-/// Herdr can report a successful settled prompt while a fresh Codex TUI still
-/// holds the paste in its composer. The terminal signature is precise: the
-/// composer contains Codex's collapsed `Pasted Content` marker and the context
-/// meter remains at zero. Submit that existing paste with one Enter, observe
-/// the turn start, then wait for its terminal state instead of pasting again.
+/// Herdr can report a successful settled prompt while a Codex TUI still has
+/// produced no worker-authored progress. Both context observations are sampled
+/// over a bounded redraw window. A tracker-silent settle receives one Enter
+/// unless the resolved post-settle meter proves progress relative to the
+/// baseline. Composer rendering is logged only as diagnostic evidence; it never
+/// gates recovery. Observe the turn start, then wait for its terminal state
+/// instead of pasting again.
 pub fn prompt_agent(
     agent_name: &str,
     pane_id: &str,
     prompt: &str,
     stall_context: &str,
 ) -> Result<PromptOutcome, String> {
+    let (baseline_context, _) = sample_codex_context_percent(pane_id)?;
+    prompt_agent_with_tracker_probe(
+        agent_name,
+        pane_id,
+        prompt,
+        stall_context,
+        baseline_context,
+        || Ok(None),
+    )
+}
+
+fn prompt_agent_with_tracker_probe<Probe>(
+    agent_name: &str,
+    pane_id: &str,
+    prompt: &str,
+    stall_context: &str,
+    baseline_context: Option<u8>,
+    mut tracker_probe: Probe,
+) -> Result<PromptOutcome, String>
+where
+    Probe: FnMut() -> Result<Option<BeadOutcome>, String>,
+{
     let prompt_args = ["agent", "prompt", agent_name, prompt, "--wait"];
     let settled = match capture("herdr", &prompt_args, None) {
         Ok(settled) => settled,
@@ -315,12 +396,35 @@ pub fn prompt_agent(
         Err(error) => return Err(error),
     };
 
-    let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
-    if !has_unsubmitted_codex_prompt(&pane) {
-        return Ok(PromptOutcome::Settled(settled));
+    let tracker_outcome = tracker_probe()?;
+    if let Some(outcome @ (BeadOutcome::Completed | BeadOutcome::Blocked)) = tracker_outcome {
+        eprintln!("tracker reported {outcome:?} after settle; skipping pane recovery");
+        return Ok(PromptOutcome::TrackerObserved { settled, outcome });
     }
 
-    eprintln!("agent prompt remained pasted after settle; nudging Enter once");
+    let (post_settle_context, pane) = sample_codex_context_percent(pane_id)?;
+    if !should_nudge_after_settle(baseline_context, post_settle_context) {
+        return Ok(match tracker_outcome {
+            Some(outcome) => PromptOutcome::TrackerObserved { settled, outcome },
+            None => PromptOutcome::Settled(settled),
+        });
+    }
+
+    let composer_diagnostic = if pasted_composer_is_visible(&pane) {
+        "pasted composer visible"
+    } else {
+        "composer not yet visible or empty"
+    };
+    let context_diagnostic = match (baseline_context, post_settle_context) {
+        (Some(percent), Some(_)) => format!("context unchanged at {percent}%"),
+        (None, Some(0)) => "context baseline unavailable; post-settle idle at 0%".to_owned(),
+        (_, None) => "post-settle context unavailable".to_owned(),
+        (None, Some(_)) => unreachable!("a nonzero post-settle context proves progress"),
+    };
+    eprintln!(
+        "agent prompt had a zero-effect settle ({context_diagnostic}; {composer_diagnostic}); \
+         nudging Enter once"
+    );
     capture("herdr", &["agent", "send-keys", agent_name, "Enter"], None)?;
     if let Err(error) = capture(
         "herdr",
@@ -338,18 +442,26 @@ pub fn prompt_agent(
         eprintln!("Enter nudge produced no observed worker turn: {error}");
         return Ok(PromptOutcome::NeverEngaged { error });
     }
-    capture(
+    let settled = capture(
         "herdr",
         &[
             "agent", "wait", agent_name, "--until", "done", "--until", "blocked",
         ],
         None,
-    )
-    .map(PromptOutcome::Settled)
+    )?;
+    if let Some(outcome) = tracker_probe()? {
+        return Ok(PromptOutcome::TrackerObserved { settled, outcome });
+    }
+    Ok(PromptOutcome::Settled(settled))
+}
+
+fn tracker_outcome(repo: &Path, bead_id: &str) -> Result<Option<BeadOutcome>, String> {
+    probe_bead_outcome(repo, bead_id).map(Some)
 }
 
 /// Dispatch the initial worker prompt, retrying the observed startup race once.
 pub fn lane_prompt(
+    repo: &Path,
     bead: &ReadyBead,
     lane: &Lane,
     default_branch: &str,
@@ -365,8 +477,18 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "worker startup")?;
-    if let PromptOutcome::Settled(settled) = &outcome {
+    let (baseline_context, _) = sample_codex_context_percent(&lane.pane_id)?;
+    let outcome = prompt_agent_with_tracker_probe(
+        agent_name,
+        &lane.pane_id,
+        &prompt,
+        "worker startup",
+        baseline_context,
+        || tracker_outcome(repo, &bead.id),
+    )?;
+    if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
+        &outcome
+    {
         println!("{}", settled.trim_end());
     }
     Ok(outcome)
@@ -398,14 +520,25 @@ pub fn rework_prompt(bead_id: &str, branch: &str, adjudication: &Adjudication) -
 }
 
 pub fn lane_prompt_rework(
+    repo: &Path,
     bead_id: &str,
     lane: &Lane,
     agent_name: &str,
     adjudication: &Adjudication,
 ) -> Result<PromptOutcome, String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
-    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "recovered startup")?;
-    if let PromptOutcome::Settled(settled) = &outcome {
+    let (baseline_context, _) = sample_codex_context_percent(&lane.pane_id)?;
+    let outcome = prompt_agent_with_tracker_probe(
+        agent_name,
+        &lane.pane_id,
+        &prompt,
+        "recovered startup",
+        baseline_context,
+        || tracker_outcome(repo, bead_id),
+    )?;
+    if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
+        &outcome
+    {
         println!("{}", settled.trim_end());
     }
     Ok(outcome)
@@ -649,22 +782,68 @@ mod tests {
     }
 
     #[test]
-    fn unsubmitted_prompt_requires_pasted_composer_and_untouched_context() {
-        let captured_race = "\
-• Ran herdr agent prompt ab-example <prompt> --wait\n\
-  └ agent_prompted\n\n\
-› [Pasted Content 1004 chars]\n\n\
-  gpt-5.6-sol high · Context 0% used\n";
-        assert!(has_unsubmitted_codex_prompt(captured_race));
+    fn zero_effect_settle_nudges_before_pasted_composer_renders() {
+        let pane = "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n";
+        assert!(should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(pane)
+        ));
+        assert!(!pasted_composer_is_visible(pane));
+    }
 
-        let engaged_worker = captured_race.replace("Context 0% used", "Context 24% used");
-        assert!(!has_unsubmitted_codex_prompt(&engaged_worker));
+    #[test]
+    fn zero_effect_settle_nudges_when_pasted_composer_is_visible() {
+        let pane = "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n";
+        assert!(should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(pane)
+        ));
+        assert!(pasted_composer_is_visible(pane));
+    }
 
-        let transcript_only = captured_race.replace(
-            "› [Pasted Content 1004 chars]",
-            "• Diagnosed a Pasted Content 1004 chars report",
-        );
-        assert!(!has_unsubmitted_codex_prompt(&transcript_only));
+    #[test]
+    fn engaged_settle_does_not_nudge() {
+        assert!(!should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(
+                "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+            )
+        ));
+        assert!(!should_nudge_after_settle(
+            Some(0),
+            current_codex_context_percent(
+                "• Worker completed and reported the literal diagnostic Context 0% used\n\n\
+                 gpt-5.6-sol high fast · /workspace · Approve for me · Context 24% used · weekly 92% left\n"
+            )
+        ));
+    }
+
+    #[test]
+    fn unchanged_warm_context_is_a_zero_effect_settle() {
+        assert!(should_nudge_after_settle(
+            Some(24),
+            current_codex_context_percent(
+                "› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24% used\n"
+            )
+        ));
+    }
+
+    #[test]
+    fn resolved_context_decision_table_uses_progress_as_the_only_nudge_veto() {
+        for (baseline, post_settle, should_nudge) in [
+            (Some(0), Some(0), true),
+            (Some(0), Some(24), false),
+            (Some(0), None, true),
+            (None, Some(0), true),
+            (None, Some(24), false),
+            (None, None, true),
+        ] {
+            assert_eq!(
+                should_nudge_after_settle(baseline, post_settle),
+                should_nudge,
+                "unexpected decision for baseline {baseline:?}, post-settle {post_settle:?}"
+            );
+        }
     }
 
     #[test]

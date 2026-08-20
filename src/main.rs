@@ -327,7 +327,7 @@ fn resolution_prompt(candidate: &Candidate, default_branch: &str, reason: &str) 
 
 fn require_prompt_engaged(outcome: PromptOutcome, role: &str) -> Result<(), String> {
     match outcome {
-        PromptOutcome::Settled(_) => Ok(()),
+        PromptOutcome::Settled(_) | PromptOutcome::TrackerObserved { .. } => Ok(()),
         PromptOutcome::NeverEngaged { error } => {
             Err(format!("{role} never engaged after Enter nudge: {error}"))
         }
@@ -816,6 +816,7 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                     let agent_name = sanitize_agent_name(&settled.bead_id);
                     require_prompt_engaged(
                         lane_prompt_rework(
+                            &repo,
                             &settled.bead_id,
                             &settled.lane,
                             &agent_name,
@@ -1411,7 +1412,13 @@ fn record_drain_settle(
             })?;
         let agent_name = sanitize_agent_name(&settled.bead_id);
         require_prompt_engaged(
-            lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?,
+            lane_prompt_rework(
+                repo,
+                &settled.bead_id,
+                &settled.lane,
+                &agent_name,
+                adjudication,
+            )?,
             "rework agent",
         )?;
     }
@@ -1826,7 +1833,7 @@ fn route_selected_existing_lane(
         .ok_or_else(|| "ReworkRequested lane is missing its reviewed adjudication".to_owned())?;
     let lane = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent)?;
     require_prompt_engaged(
-        lane_prompt_rework(&bead.id, &lane, &agent_name, adjudication)?,
+        lane_prompt_rework(repo, &bead.id, &lane, &agent_name, adjudication)?,
         "rework agent",
     )?;
     println!(
@@ -1873,8 +1880,9 @@ fn dispatch_cycle(
     let lane_started = Instant::now();
     let lane_result = (|| -> Result<(abacus::Lane, abacus::BeadOutcome), String> {
         let lane = lane_open(repo_str, &bead, &agent_name)?;
-        let outcome = match lane_prompt(&bead, &lane, &default_branch, &agent_name)? {
+        let outcome = match lane_prompt(repo, &bead, &lane, &default_branch, &agent_name)? {
             PromptOutcome::Settled(_) => lane_settle(repo, &bead)?,
+            PromptOutcome::TrackerObserved { outcome, .. } => outcome,
             PromptOutcome::NeverEngaged { .. } => abacus::BeadOutcome::NeverEngaged,
         };
         Ok((lane, outcome))
