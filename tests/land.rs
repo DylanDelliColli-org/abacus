@@ -365,6 +365,14 @@ impl LandFixture {
             &herdr,
             format!(
                 "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> '{herdr_log}'\n\
+                 resolve_branch() {{\n\
+                   branch=$1\n\
+                   printf 'resolution-action=%s branch=%s\\n' \"$action\" \"$branch\" >> '{herdr_log}'\n\
+                   parent=$('{real_git}' --git-dir='{origin}' rev-parse \"refs/heads/$branch\")\n\
+                   tree=$('{real_git}' --git-dir='{origin}' rev-parse \"$parent^{{tree}}\")\n\
+                   commit=$(GIT_AUTHOR_NAME='Resolution Agent' GIT_AUTHOR_EMAIL='agent@example.test' GIT_COMMITTER_NAME='Resolution Agent' GIT_COMMITTER_EMAIL='agent@example.test' '{real_git}' --git-dir='{origin}' commit-tree \"$tree\" -p \"$parent\" -m 'agent resolution')\n\
+                   '{real_git}' --git-dir='{origin}' update-ref \"refs/heads/$branch\" \"$commit\"\n\
+                 }}\n\
                  if [ \"$1 $2\" = \"worktree open\" ]; then\n\
                    branch=''\n\
                    for arg in \"$@\"; do\n\
@@ -379,19 +387,30 @@ impl LandFixture {
                      printf 'injected resolution-agent failure\\n' >&2\n\
                      exit 1\n\
                    fi\n\
-                   if [ \"$action\" = \"resolve\" ]; then\n\
+                   if [ \"$action\" = \"resolve\" ] || [ \"$action\" = \"pasted-resolve\" ]; then\n\
                      branch=$(command sed -n 's|.*existing PR branch \\(lane/[A-Za-z0-9._-]*\\).*|\\1|p' <<EOF\n\
 $*\n\
 EOF\n\
                      )\n\
                      branch=${{branch%.}}\n\
-                     printf 'resolution-action=%s branch=%s\\n' \"$action\" \"$branch\" >> '{herdr_log}'\n\
-                     parent=$('{real_git}' --git-dir='{origin}' rev-parse \"refs/heads/$branch\")\n\
-                     tree=$('{real_git}' --git-dir='{origin}' rev-parse \"$parent^{{tree}}\")\n\
-                     commit=$(GIT_AUTHOR_NAME='Resolution Agent' GIT_AUTHOR_EMAIL='agent@example.test' GIT_COMMITTER_NAME='Resolution Agent' GIT_COMMITTER_EMAIL='agent@example.test' '{real_git}' --git-dir='{origin}' commit-tree \"$tree\" -p \"$parent\" -m 'agent resolution')\n\
-                     '{real_git}' --git-dir='{origin}' update-ref \"refs/heads/$branch\" \"$commit\"\n\
+                     printf '%s\\n' \"$branch\" > '{herdr_action}.branch'\n\
+                     if [ \"$action\" = \"resolve\" ]; then resolve_branch \"$branch\"; fi\n\
                    fi\n\
                    printf '%s\\n' 'resolution agent settled'\n\
+                 elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+                   action=$(command cat '{herdr_action}')\n\
+                   if [ \"$action\" = \"pasted-resolve\" ]; then\n\
+                     printf '› [Pasted Content 888 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+                   else\n\
+                     printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+                   fi\n\
+                 elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
+                   action=$(command cat '{herdr_action}')\n\
+                   if [ \"$action\" != \"pasted-resolve\" ]; then printf 'unexpected Enter nudge\\n' >&2; exit 2; fi\n\
+                   branch=$(command cat '{herdr_action}.branch')\n\
+                   resolve_branch \"$branch\"\n\
+                 elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
+                   printf 'resolution agent transition observed\\n'\n\
                  else\n\
                    printf 'unexpected herdr call: %s\\n' \"$*\" >&2\n\
                    exit 2\n\
@@ -1066,7 +1085,7 @@ fn t51_green_resolution_attempt_is_readmitted_and_reenqueued_exactly_once() {
             merged_queue_state(),
         ],
     );
-    std::fs::write(&fixture.herdr_action, "resolve\n").unwrap();
+    std::fs::write(&fixture.herdr_action, "pasted-resolve\n").unwrap();
 
     let output = fixture.run();
     assert!(
@@ -1103,6 +1122,17 @@ fn t51_green_resolution_attempt_is_readmitted_and_reenqueued_exactly_once() {
         1,
         "{herdr}"
     );
+    for recovery_call in [
+        "pane read resolution-pane --lines 40",
+        "agent send-keys r-ab-resolved Enter",
+        "agent wait r-ab-resolved --until working --timeout 5000",
+        "agent wait r-ab-resolved --until done --until blocked",
+    ] {
+        assert!(
+            herdr.lines().any(|line| line == recovery_call),
+            "land resolution bypassed shared prompt recovery call {recovery_call:?}:\n{herdr}"
+        );
+    }
     assert_eq!(
         herdr
             .lines()
