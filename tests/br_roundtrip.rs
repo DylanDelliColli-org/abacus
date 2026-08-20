@@ -1720,7 +1720,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
+fn abacus_run_rechecks_a_late_pasted_prompt_before_classifying_a_failed_nudge() {
     require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1738,6 +1738,7 @@ fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
     install_no_pr_gh_stub(&fake_bin);
     let fake_herdr = fake_bin.join("herdr");
     let herdr_calls = ws.0.join("herdr-calls");
+    let first_pane_read = ws.0.join("first-pane-read");
     let lane_json = serde_json::json!({
         "result": {
             "type": "worktree_created",
@@ -1756,9 +1757,14 @@ fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
              if [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
-               printf 'prompt returned success while content remained pasted\\n'\n\
+               printf '{{\"result\":{{\"type\":\"agent_prompted\",\"agent\":{{\"agent_status\":\"done\"}}}}}}\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
-               printf '› [Pasted Content 1004 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               if [ -f '{}' ]; then\n\
+                 printf '› [Pasted Content 1004 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               else\n\
+                 : > '{}'\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
+               fi\n\
              elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
                exit 0\n\
              elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
@@ -1771,6 +1777,8 @@ fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
              fi\n",
             herdr_calls.display(),
             lane_json,
+            first_pane_read.display(),
+            first_pane_read.display(),
         ),
     )
     .unwrap();
@@ -1796,6 +1804,14 @@ fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
+        stderr.contains("rechecking once"),
+        "the late composer render was not observed through a logged recheck:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("nudging Enter once"),
+        "the detected recovery attempt was not logged:\n{stderr}"
+    );
+    assert!(
         stderr.contains("worker never engaged"),
         "the failed recovery was not truthfully classified:\n{stderr}"
     );
@@ -1804,6 +1820,14 @@ fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
         "the engine-owned claim was mistaken for worker engagement:\n{stderr}"
     );
     let calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        2,
+        "the false-success settle must receive exactly one bounded pane recheck:\n{calls}"
+    );
     assert_eq!(
         calls
             .lines()

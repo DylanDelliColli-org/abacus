@@ -282,8 +282,35 @@ fn has_unsubmitted_codex_prompt(pane: &str) -> bool {
         let line = line.trim_start();
         line.starts_with('›') && line.contains("Pasted Content") && line.contains("chars")
     });
-    let untouched_context = tail.iter().any(|line| line.contains("Context 0% used"));
-    pasted_composer && untouched_context
+    pasted_composer && has_untouched_codex_context(pane)
+}
+
+fn has_untouched_codex_context(pane: &str) -> bool {
+    pane.lines()
+        .rev()
+        .take(12)
+        .any(|line| line.contains("Context 0% used"))
+}
+
+fn detect_unsubmitted_codex_prompt<Read, Delay>(
+    mut read_pane: Read,
+    delay: Delay,
+) -> Result<bool, String>
+where
+    Read: FnMut() -> Result<String, String>,
+    Delay: FnOnce(Duration),
+{
+    let first = read_pane()?;
+    if has_unsubmitted_codex_prompt(&first) {
+        return Ok(true);
+    }
+    if !has_untouched_codex_context(&first) {
+        return Ok(false);
+    }
+
+    eprintln!("agent prompt settled at zero context before composer rendered; rechecking once");
+    delay(Duration::from_millis(100));
+    read_pane().map(|pane| has_unsubmitted_codex_prompt(&pane))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,8 +342,9 @@ pub fn prompt_agent(
         Err(error) => return Err(error),
     };
 
-    let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
-    if !has_unsubmitted_codex_prompt(&pane) {
+    let pane_args = ["pane", "read", pane_id, "--lines", "40"];
+    if !detect_unsubmitted_codex_prompt(|| capture("herdr", &pane_args, None), std::thread::sleep)?
+    {
         return Ok(PromptOutcome::Settled(settled));
     }
 
@@ -665,6 +693,48 @@ mod tests {
             "• Diagnosed a Pasted Content 1004 chars report",
         );
         assert!(!has_unsubmitted_codex_prompt(&transcript_only));
+    }
+
+    #[test]
+    fn unsubmitted_prompt_detection_rechecks_one_zero_context_render() {
+        let mut panes = [
+            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n",
+            "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n",
+        ]
+        .into_iter();
+        let mut observed_delay = None;
+
+        let detected = detect_unsubmitted_codex_prompt(
+            || {
+                Ok(panes
+                    .next()
+                    .expect("detection must read at most twice")
+                    .into())
+            },
+            |delay| observed_delay = Some(delay),
+        )
+        .unwrap();
+
+        assert!(detected);
+        assert_eq!(observed_delay, Some(Duration::from_millis(100)));
+        assert!(panes.next().is_none(), "detection read more than twice");
+    }
+
+    #[test]
+    fn unsubmitted_prompt_detection_does_not_recheck_an_engaged_render() {
+        let mut reads = 0;
+
+        let detected = detect_unsubmitted_codex_prompt(
+            || {
+                reads += 1;
+                Ok("› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n".into())
+            },
+            |_| panic!("an engaged pane must not be delayed or re-read"),
+        )
+        .unwrap();
+
+        assert!(!detected);
+        assert_eq!(reads, 1);
     }
 
     #[test]

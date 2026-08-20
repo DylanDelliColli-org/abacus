@@ -1354,6 +1354,7 @@ fn run_rework_dispatch_sweep(
     let rework_prompted = workspace.0.join("rework-prompted");
     let recovered = workspace.0.join("recovered");
     let fresh_completed = workspace.0.join("fresh-completed");
+    let first_pane_read = workspace.0.join("first-pane-read");
 
     let ready = if ready_fresh_bead {
         r#"[{"id":"it-fresh","title":"fresh work","priority":0,"issue_type":"task","labels":[]}]"#
@@ -1449,7 +1450,12 @@ elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
   printf 'fresh settled\n'
 elif [ "$1 $2" = "pane read" ]; then
   if [ "{prompt_remains_pasted}" = "true" ]; then
-    printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 0%% used\n'
+    if [ -f '{first_pane_read}' ]; then
+      printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 0%% used\n'
+    else
+      : > '{first_pane_read}'
+      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0%% used\n'
+    fi
   else
     printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
   fi
@@ -1471,6 +1477,7 @@ fi
             events = events.display(),
             rework_prompted = rework_prompted.display(),
             fresh_completed = fresh_completed.display(),
+            first_pane_read = first_pane_read.display(),
             prompt_remains_pasted = prompt_remains_pasted,
         ),
     )
@@ -1579,6 +1586,23 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(events, "nudge-rework\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rechecking once"),
+        "the late composer render was not observed through a logged recheck:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("nudging Enter once"),
+        "the recovery attempt was not logged:\n{stderr}"
+    );
+    assert_eq!(
+        herdr_calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        2,
+        "the false-success settle must receive exactly one bounded pane recheck:\n{herdr_calls}"
+    );
     assert_eq!(
         herdr_calls
             .lines()
