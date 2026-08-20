@@ -218,7 +218,7 @@ fn open_lane_worktree(repo_str: &str, bead_id: &str) -> Result<Lane, String> {
     Ok(lane)
 }
 
-fn start_lane_agent(lane: &Lane, agent_name: &str) -> Result<(), String> {
+pub fn lane_start_agent(lane: &Lane, agent_name: &str) -> Result<(), String> {
     capture(
         "herdr",
         &[
@@ -239,19 +239,46 @@ fn start_lane_agent(lane: &Lane, agent_name: &str) -> Result<(), String> {
 /// Open the lane worktree and start its Codex worker.
 pub fn lane_open(repo_str: &str, bead: &ReadyBead, agent_name: &str) -> Result<Lane, String> {
     let lane = open_lane_worktree(repo_str, &bead.id)?;
-    start_lane_agent(&lane, agent_name)?;
+    lane_start_agent(&lane, agent_name)?;
     Ok(lane)
 }
 
-/// Recreate a vanished warm lane on its durable, already-existing branch.
-///
-/// Live verification on 2026-08-20 proved Herdr reuses the exact branch when
-/// invoked from the parent repository workspace, so no suffixed recovery
-/// branch or manual git-worktree fallback is needed.
+/// Recreate a vanished warm lane only when no workspace or checkout survives.
 pub fn lane_recover(repo_str: &str, bead_id: &str, agent_name: &str) -> Result<Lane, String> {
     let lane = open_lane_worktree(repo_str, bead_id)?;
-    start_lane_agent(&lane, agent_name)?;
+    lane_start_agent(&lane, agent_name)?;
     println!("warm lane recovered for {bead_id} on {}", lane.branch);
+    Ok(lane)
+}
+
+/// Open a surviving Git worktree in Herdr, then restart its deterministic agent.
+pub fn lane_open_existing_worktree(
+    repo_str: &str,
+    bead_id: &str,
+    agent_name: &str,
+) -> Result<Lane, String> {
+    let branch = format!("lane/{bead_id}");
+    let opened = capture(
+        "herdr",
+        &[
+            "worktree",
+            "open",
+            "--cwd",
+            repo_str,
+            "--branch",
+            &branch,
+            "--label",
+            bead_id,
+            "--no-focus",
+        ],
+        None,
+    )?;
+    let lane = parse_worktree_created(&opened)?;
+    lane_start_agent(&lane, agent_name)?;
+    println!(
+        "surviving worktree reopened for {bead_id}: workspace {} on {}",
+        lane.workspace_id, lane.branch
+    );
     Ok(lane)
 }
 

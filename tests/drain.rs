@@ -901,9 +901,123 @@ fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
     );
 }
 
+#[test]
+fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
+    let bead_id = "it-run-rework";
+    let workspace = TempDir::new("run-rework-before-fresh");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let br_calls = workspace.0.join("br-calls");
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1\" = \"ready\" ]; then\n\
+               printf '[{{\"id\":\"{bead_id}\",\"title\":\"reopened rework\",\"priority\":0,\"labels\":[]}}]\\n'\n\
+             elif [ \"$1 $2 $3\" = \"update {bead_id} --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"status\":\"open\",\"comments\":[]}}]\\n'\n\
+             else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            calls = br_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{bead_id}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"warm-workspace\",\"pane_id\":\"warm-pane\"}}]}}}}'\n\
+             elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ]; then\n\
+               printf 'rework settled\\n'\n\
+             elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf 'fatal: lane/{bead_id} is already checked out\\n' >&2; exit 128\n\
+             else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            calls = herdr_calls.display(),
+            root = workspace.0.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            r####"#!/bin/sh
+printf '%s\n' "$*" >> '{calls}'
+if [ "$1 $2 $3" = "pr view lane/{bead_id}" ]; then
+  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"reviewed-head","number":37,"comments":[{{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{{"login":"outside-reviewer"}},"authorAssociation":"CONTRIBUTOR"}},{{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::dispatch_cycle): ACCEPTED. Route before fresh dispatch.\n\nAdjudicated head: reviewed-head","author":{{"login":"repository-owner"}},"authorAssociation":"OWNER"}}]}}'
+else
+  printf 'unexpected gh call: %s\n' "$*" >&2; exit 2
+fi
+"####,
+            calls = gh_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1\" = \"for-each-ref\" ]; then printf 'lane/it-run-rework\\n'; elif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else printf 'unexpected git call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let br_calls = std::fs::read_to_string(br_calls).unwrap();
+    assert!(
+        !br_calls.contains("update it-run-rework --claim"),
+        "run claimed a rework transition as fresh work:\n{br_calls}"
+    );
+    let herdr_calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert!(
+        herdr_calls.contains("agent prompt it-run-rework")
+            && herdr_calls.contains("src/main.rs::dispatch_cycle")
+            && herdr_calls.contains("--wait"),
+        "run did not route the adjudicated rework spec to the warm agent:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls
+            .lines()
+            .any(|call| call.starts_with("worktree create")),
+        "run attempted a fresh worktree before routing rework:\n{herdr_calls}"
+    );
+    let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    assert!(
+        gh_calls.contains("pr view lane/it-run-rework"),
+        "run never probed the existing lane PR:\n{gh_calls}"
+    );
+}
+
 fn run_rework_dispatch_sweep(
     tag: &str,
     warm_agent_present: bool,
+    workspace_survives: bool,
     ready_fresh_bead: bool,
 ) -> (std::process::Output, String, String) {
     let bead_id = "it-rework";
@@ -957,6 +1071,11 @@ fn run_rework_dispatch_sweep(
     } else {
         String::new()
     };
+    let open_workspace_id = if workspace_survives {
+        r#""recovered-workspace""#
+    } else {
+        "null"
+    };
     let fake_herdr = fake_bin.join("herdr");
     std::fs::write(
         &fake_herdr,
@@ -971,16 +1090,25 @@ if [ "$1 $2" = "agent list" ]; then
   else
     printf '%s\n' '{{"result":{{"agents":[]}}}}'
   fi
-elif [ "$1 $2" = "worktree create" ]; then
+elif [ "$1 $2" = "worktree list" ]; then
+  printf '%s\n' '{{"result":{{"type":"worktree_list","worktrees":[{{"branch":"lane/{bead_id}","path":"{root}","open_workspace_id":{open_workspace_id}}}]}}}}'
+elif [ "$1 $2" = "pane list" ]; then
+  printf '%s\n' '{{"result":{{"type":"pane_list","panes":[{{"pane_id":"recovered-pane","cwd":"{root}"}}]}}}}'
+elif [ "$1 $2" = "worktree open" ]; then
   if printf '%s\n' "$*" | grep -q -- '--branch lane/{bead_id}'; then
     : > '{recovered}'
     printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"recovered-workspace"}},"root_pane":{{"pane_id":"recovered-pane"}},"worktree":{{"path":"{root}","branch":"lane/{bead_id}"}}}}}}'
-  elif printf '%s\n' "$*" | grep -q -- '--branch lane/it-fresh'; then
+  else
+    printf 'unexpected worktree open: %s\n' "$*" >&2; exit 2
+  fi
+elif [ "$1 $2" = "worktree create" ]; then
+  if printf '%s\n' "$*" | grep -q -- '--branch lane/it-fresh'; then
     printf '%s\n' '{{"result":{{"type":"worktree_created","workspace":{{"workspace_id":"fresh-workspace"}},"root_pane":{{"pane_id":"fresh-pane"}},"worktree":{{"path":"{root}","branch":"lane/it-fresh"}}}}}}'
   else
-    printf 'unexpected worktree branch: %s\n' "$*" >&2; exit 2
+    printf 'recovery collided with the surviving checkout: %s\n' "$*" >&2; exit 128
   fi
 elif [ "$1 $2" = "agent start" ]; then
+  if [ "$3" = "{bead_id}" ]; then : > '{recovered}'; fi
   exit 0
 elif [ "$1 $2" = "worktree remove" ]; then
   exit 0
@@ -1001,6 +1129,7 @@ fi
             bead_id = bead_id,
             root = workspace.0.display(),
             initial_agent = initial_agent,
+            open_workspace_id = open_workspace_id,
             events = events.display(),
             rework_prompted = rework_prompted.display(),
             fresh_completed = fresh_completed.display(),
@@ -1059,7 +1188,7 @@ fi
 #[test]
 fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-existing-agent", true, false);
+        run_rework_dispatch_sweep("rework-existing-agent", true, false, false);
 
     assert!(
         output.status.success(),
@@ -1098,7 +1227,7 @@ fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
 #[test]
 fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
     let (output, herdr_calls, events) =
-        run_rework_dispatch_sweep("rework-before-fresh", true, true);
+        run_rework_dispatch_sweep("rework-before-fresh", true, false, true);
 
     assert!(
         output.status.success(),
@@ -1121,7 +1250,7 @@ fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
 #[test]
 fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
     let (output, herdr_calls, _events) =
-        run_rework_dispatch_sweep("rework-recover-agent", false, false);
+        run_rework_dispatch_sweep("rework-recover-agent", false, false, false);
 
     assert!(
         output.status.success(),
@@ -1129,18 +1258,53 @@ fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let creates: Vec<_> = herdr_calls
+    let opens: Vec<_> = herdr_calls
         .lines()
-        .filter(|call| call.starts_with("worktree create"))
+        .filter(|call| call.starts_with("worktree open"))
         .collect();
-    assert_eq!(creates.len(), 1, "Herdr calls:\n{herdr_calls}");
+    assert_eq!(opens.len(), 1, "Herdr calls:\n{herdr_calls}");
     assert!(
-        creates[0].contains("--branch lane/it-rework") && creates[0].contains("--label it-rework"),
-        "recovery did not reuse the exact durable branch:\n{herdr_calls}"
+        opens[0].contains("--branch lane/it-rework") && opens[0].contains("--label it-rework"),
+        "recovery did not open the surviving checkout on its exact durable branch:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls
+            .lines()
+            .any(|call| call.starts_with("worktree create")
+                && call.contains("--branch lane/it-rework")),
+        "recovery attempted a colliding second checkout:\n{herdr_calls}"
     );
     assert!(
         herdr_calls.contains("agent start it-rework --kind codex --pane recovered-pane"),
         "recovery did not restart the deterministic author agent:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
+    let (output, herdr_calls, _events) =
+        run_rework_dispatch_sweep("rework-restart-workspace", false, true, false);
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        herdr_calls.contains("pane list --workspace recovered-workspace"),
+        "workspace recovery never identified its surviving pane:\n{herdr_calls}"
+    );
+    assert!(
+        herdr_calls.contains("agent start it-rework --kind codex --pane recovered-pane"),
+        "workspace recovery did not restart the author in place:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls.lines().any(|call| {
+            (call.starts_with("worktree open") || call.starts_with("worktree create"))
+                && call.contains("lane/it-rework")
+        }),
+        "workspace recovery descended past the earliest surviving rung:\n{herdr_calls}"
     );
 }
 

@@ -19,8 +19,9 @@ use abacus::land::{
 };
 use abacus::lane::{
     LaneState, LaneStateInputs, MorningReport, PullRequestProbe, PullRequestState, capture,
-    derive_lane_state, lane_open, lane_prompt, lane_prompt_rework, lane_reap, lane_reap_for_state,
-    lane_recover, lane_settle, probe_bead_outcome,
+    derive_lane_state, lane_open, lane_open_existing_worktree, lane_prompt, lane_prompt_rework,
+    lane_reap, lane_reap_for_state, lane_recover, lane_settle, lane_start_agent,
+    probe_bead_outcome,
 };
 #[cfg(test)]
 use abacus::lane::{retry_never_engaged_once, retry_probe_once};
@@ -694,6 +695,7 @@ enum DispatchCycle {
     Empty,
     Settled(SettledLane),
     ClaimLost(String),
+    ReworkRouted(String),
 }
 
 struct SettledLane {
@@ -804,6 +806,10 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
             }
         }
         DispatchCycle::ClaimLost(_) => unreachable!("run treats claim failures as errors"),
+        DispatchCycle::ReworkRouted(bead_id) => {
+            println!("bead {bead_id} rework completed; existing lane remains warm");
+            Ok(0)
+        }
     }
 }
 
@@ -853,6 +859,7 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
             DispatchCycle::ClaimLost(bead_id) => {
                 lost_claims.insert(bead_id);
             }
+            DispatchCycle::ReworkRouted(_) => {}
         }
     }
 }
@@ -879,6 +886,42 @@ struct AgentView {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct WorktreeListEnvelope {
+    result: WorktreeListResult,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WorktreeListResult {
+    #[serde(default)]
+    worktrees: Vec<WorktreeView>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WorktreeView {
+    branch: String,
+    path: String,
+    #[serde(default)]
+    open_workspace_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PaneListEnvelope {
+    result: PaneListResult,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PaneListResult {
+    #[serde(default)]
+    panes: Vec<PaneView>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PaneView {
+    pane_id: String,
+    cwd: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct BeadListEnvelope {
     issues: Vec<ListedLaneBead>,
 }
@@ -896,6 +939,21 @@ fn parse_agent_list(json: &str) -> Result<Vec<AgentView>, String> {
     let envelope: AgentListEnvelope = serde_json::from_str(json)
         .map_err(|error| format!("unparseable `herdr agent list` output: {error}"))?;
     Ok(envelope.result.agents)
+}
+
+fn parse_worktree_list(json: &str) -> Result<Vec<WorktreeView>, String> {
+    if json.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let envelope: WorktreeListEnvelope = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable herdr worktree list output: {error}"))?;
+    Ok(envelope.result.worktrees)
+}
+
+fn parse_pane_list(json: &str) -> Result<Vec<PaneView>, String> {
+    let envelope: PaneListEnvelope = serde_json::from_str(json)
+        .map_err(|error| format!("unparseable herdr pane list output: {error}"))?;
+    Ok(envelope.result.panes)
 }
 
 fn parse_lane_beads(json: &str) -> Result<Vec<ListedLaneBead>, String> {
@@ -957,6 +1015,104 @@ fn agent_belongs_to_repo(agent: &AgentView, repo: &Path) -> bool {
             .any(|component| component.as_os_str() == repo_name)
 }
 
+fn repo_agents(repo: &Path) -> Result<Vec<AgentView>, String> {
+    Ok(
+        parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?
+            .into_iter()
+            .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
+            .collect(),
+    )
+}
+
+fn repo_worktrees(repo: &Path) -> Result<Vec<WorktreeView>, String> {
+    let repo_str = repo.to_string_lossy().into_owned();
+    parse_worktree_list(&capture(
+        "herdr",
+        &["worktree", "list", "--cwd", &repo_str],
+        None,
+    )?)
+}
+
+fn agent_lane(bead_id: &str, agent: &AgentView) -> abacus::Lane {
+    abacus::Lane {
+        workspace_id: agent.workspace_id.clone(),
+        pane_id: agent.pane_id.clone(),
+        checkout_path: agent.cwd.clone(),
+        branch: format!("lane/{bead_id}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryRung {
+    ReuseAgent,
+    RestartWorkspace,
+    OpenWorktree,
+    CreateWorktree,
+}
+
+fn recovery_rung(agent_present: bool, worktree: Option<&WorktreeView>) -> RecoveryRung {
+    if agent_present {
+        RecoveryRung::ReuseAgent
+    } else {
+        match worktree.and_then(|worktree| worktree.open_workspace_id.as_ref()) {
+            Some(_) => RecoveryRung::RestartWorkspace,
+            None if worktree.is_some() => RecoveryRung::OpenWorktree,
+            None => RecoveryRung::CreateWorktree,
+        }
+    }
+}
+
+fn recover_lane_from_substrate(
+    repo: &Path,
+    bead_id: &str,
+    agent_name: &str,
+    agent: Option<&AgentView>,
+) -> Result<abacus::Lane, String> {
+    if let Some(agent) = agent {
+        return Ok(agent_lane(bead_id, agent));
+    }
+
+    let branch = format!("lane/{bead_id}");
+    let worktrees = repo_worktrees(repo)?;
+    let worktree = worktrees.iter().find(|worktree| worktree.branch == branch);
+    let repo_str = repo.to_string_lossy().into_owned();
+    match recovery_rung(false, worktree) {
+        RecoveryRung::ReuseAgent => unreachable!("the absent-agent branch cannot reuse an agent"),
+        RecoveryRung::RestartWorkspace => {
+            let worktree = worktree.expect("workspace rung requires a worktree");
+            let workspace_id = worktree
+                .open_workspace_id
+                .as_deref()
+                .expect("workspace rung requires an open workspace");
+            let panes = parse_pane_list(&capture(
+                "herdr",
+                &["pane", "list", "--workspace", workspace_id],
+                None,
+            )?)?;
+            let pane = panes
+                .iter()
+                .find(|pane| Path::new(&pane.cwd) == Path::new(&worktree.path))
+                .ok_or_else(|| {
+                    format!(
+                        "workspace {workspace_id} has no pane rooted at surviving lane {}",
+                        worktree.path
+                    )
+                })?;
+            let lane = abacus::Lane {
+                workspace_id: workspace_id.to_owned(),
+                pane_id: pane.pane_id.clone(),
+                checkout_path: worktree.path.clone(),
+                branch,
+            };
+            lane_start_agent(&lane, agent_name)?;
+            println!("warm lane agent restarted in workspace {workspace_id}");
+            Ok(lane)
+        }
+        RecoveryRung::OpenWorktree => lane_open_existing_worktree(&repo_str, bead_id, agent_name),
+        RecoveryRung::CreateWorktree => lane_recover(&repo_str, bead_id, agent_name),
+    }
+}
+
 /// Reconstruct warm lanes from durable bead state plus Herdr's deterministic
 /// agent names. Returning true means an author is still active, so the serial
 /// drain must sweep again rather than dispatching a second worker.
@@ -967,11 +1123,7 @@ fn sweep_live_lanes(
     absorbed_terminal_beads: &mut BTreeSet<String>,
     launched_reviewers: &mut BTreeSet<(String, u32)>,
 ) -> Result<bool, String> {
-    let agents = parse_agent_list(&capture("herdr", &["agent", "list"], None)?)?;
-    let agents: Vec<_> = agents
-        .into_iter()
-        .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
-        .collect();
+    let agents = repo_agents(repo)?;
     let local_lane_refs = capture(
         "git",
         &[
@@ -1021,12 +1173,7 @@ fn sweep_live_lanes(
                 checkout_path: repo.to_string_lossy().into_owned(),
                 branch: format!("lane/{bead_id}"),
             },
-            |agent| abacus::Lane {
-                workspace_id: agent.workspace_id.clone(),
-                pane_id: agent.pane_id.clone(),
-                checkout_path: agent.cwd.clone(),
-                branch: format!("lane/{bead_id}"),
-            },
+            |agent| agent_lane(&bead_id, agent),
         );
         let lane_available = agent.is_some();
         let state = record_drain_settle(
@@ -1179,7 +1326,7 @@ fn record_drain_settle(
         )
     {
         let agent_name = sanitize_agent_name(&settled.bead_id);
-        settled.lane = lane_recover(&repo.to_string_lossy(), &settled.bead_id, &agent_name)?;
+        settled.lane = recover_lane_from_substrate(repo, &settled.bead_id, &agent_name, None)?;
         settled.lane_available = true;
     }
     reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
@@ -1510,6 +1657,65 @@ fn discover_default_branch(repo: &Path) -> Result<String, String> {
     })
 }
 
+fn local_lane_branch_exists(repo: &Path, bead_id: &str) -> Result<bool, String> {
+    let branch = format!("lane/{bead_id}");
+    let reference = format!("refs/heads/{branch}");
+    let refs = capture(
+        "git",
+        &["for-each-ref", "--format=%(refname:short)", &reference],
+        Some(repo),
+    )?;
+    Ok(refs.lines().any(|candidate| candidate == branch))
+}
+
+fn route_selected_rework(repo: &Path, bead: &abacus::ReadyBead) -> Result<bool, String> {
+    if !local_lane_branch_exists(repo, &bead.id)? {
+        return Ok(false);
+    }
+    let agent_name = sanitize_agent_name(&bead.id);
+    let agents = repo_agents(repo)?;
+    let agent = agents
+        .iter()
+        .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
+    let branch = format!("lane/{}", bead.id);
+    let Some(pull_request) = probe_pull_request(repo, &branch)? else {
+        return Ok(false);
+    };
+    let outcome = probe_bead_outcome(repo, &bead.id)?;
+    let latest_adjudication =
+        latest_reviewed_adjudication(&pull_request.review_facts).map(|adjudication| {
+            abacus::lane::AdjudicationProbe {
+                disposition: match adjudication.verdict {
+                    AdjudicationVerdict::Accepted => {
+                        abacus::lane::AdjudicationDisposition::Accepted
+                    }
+                    AdjudicationVerdict::Rework => abacus::lane::AdjudicationDisposition::Rework,
+                },
+                adjudicated_head: adjudication.adjudicated_head.as_str(),
+            }
+        });
+    let state = derive_lane_state(LaneStateInputs {
+        bead_outcome: outcome,
+        worker_active: agent.is_some_and(|agent| agent.agent_status == "working"),
+        pull_request: Some(&pull_request.probe),
+        verdict_heading_count: pull_request.review_facts.verdict_cycles.len(),
+        latest_adjudication,
+    });
+    if state != LaneState::ReworkRequested {
+        return Ok(false);
+    }
+
+    let adjudication = latest_reviewed_adjudication(&pull_request.review_facts)
+        .ok_or_else(|| "ReworkRequested lane is missing its reviewed adjudication".to_owned())?;
+    let lane = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent)?;
+    lane_prompt_rework(&bead.id, &lane, &agent_name, adjudication)?;
+    println!(
+        "rework routed before fresh dispatch for {} on {}",
+        bead.id, lane.branch
+    );
+    Ok(true)
+}
+
 fn dispatch_cycle(
     repo: &Path,
     repo_str: &str,
@@ -1525,6 +1731,9 @@ fn dispatch_cycle(
     let Some(bead) = select_bead(&claimable).cloned() else {
         return Ok(DispatchCycle::Empty);
     };
+    if route_selected_rework(repo, &bead)? {
+        return Ok(DispatchCycle::ReworkRouted(bead.id));
+    }
     let default_branch = discover_default_branch(repo)?;
     if let Err(error) = capture("br", &["update", &bead.id, "--claim"], Some(repo)) {
         if reselect_after_claim_failure {
@@ -1626,6 +1835,34 @@ mod tests {
         assert_eq!(agents[1].agent_status, "done");
         assert!(agents[2].name.is_none());
         assert!(parse_agent_list("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_ladder_prefers_the_earliest_surviving_substrate() {
+        let workspace = WorktreeView {
+            branch: "lane/ab-workspace".into(),
+            path: "/repo/workspace".into(),
+            open_workspace_id: Some("w1".into()),
+        };
+        let checkout = WorktreeView {
+            branch: "lane/ab-checkout".into(),
+            path: "/repo/checkout".into(),
+            open_workspace_id: None,
+        };
+
+        assert_eq!(
+            recovery_rung(true, Some(&workspace)),
+            RecoveryRung::ReuseAgent
+        );
+        assert_eq!(
+            recovery_rung(false, Some(&workspace)),
+            RecoveryRung::RestartWorkspace
+        );
+        assert_eq!(
+            recovery_rung(false, Some(&checkout)),
+            RecoveryRung::OpenWorktree
+        );
+        assert_eq!(recovery_rung(false, None), RecoveryRung::CreateWorktree);
     }
 
     #[test]
