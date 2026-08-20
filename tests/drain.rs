@@ -149,6 +149,126 @@ fn drain_reselects_after_a_lost_claim_and_dispatches_the_next_bead() {
 }
 
 #[test]
+fn drain_never_probes_a_deferred_list_row_backed_by_a_lane_branch() {
+    let workspace = TempDir::new("drain-deferred-lane");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+
+    let br_calls = workspace.0.join("br-calls");
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
+    let completed = workspace.0.join("completed");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{br_calls}'\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"it-deferred\",\"status\":\"deferred\"}}]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               if [ -f '{completed}' ]; then\n\
+                 printf '[]\\n'\n\
+               else\n\
+                 printf '[{{\"id\":\"it-ready\",\"title\":\"ready worker\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+               fi\n\
+             elif [ \"$1 $2 $3\" = \"update it-ready --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"show it-ready\" ]; then\n\
+               printf '[{{\"status\":\"closed\"}}]\\n'\n\
+             elif [ \"$1 $2\" = \"show it-deferred\" ]; then\n\
+               printf 'deferred bead was probed\\n' >&2\n\
+               exit 9\n\
+             else\n\
+               printf 'unexpected br call: %s\\n' \"$*\" >&2\n\
+               exit 2\n\
+             fi\n",
+            br_calls = br_calls.display(),
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{herdr_calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"ready-workspace\"}},\"root_pane\":{{\"pane_id\":\"ready-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/it-ready\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               : > '{completed}'\n\
+               printf 'worker settled\\n'\n\
+             fi\n",
+            herdr_calls = herdr_calls.display(),
+            root = workspace.0.display(),
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\nif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n  printf 'origin/main\\n'\nelif [ \"$1\" = \"for-each-ref\" ]; then\n  printf 'lane/it-deferred\\n'\nelse\n  printf 'unexpected git call: %s\\n' \"$*\" >&2\n  exit 2\nfi\n",
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+            gh_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("completed: 1 [it-ready"),
+        "the ready bead was not dispatched and reported: {stdout}"
+    );
+    assert!(
+        !stdout.contains("it-deferred"),
+        "the deferred bead leaked into the report: {stdout}"
+    );
+    let br_calls = std::fs::read_to_string(br_calls).unwrap();
+    assert!(
+        !br_calls
+            .lines()
+            .any(|call| call.starts_with("show it-deferred")),
+        "the deferred bead must be filtered before br show:\n{br_calls}"
+    );
+    let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    assert!(
+        !gh_calls.contains("it-deferred"),
+        "the deferred bead must never reach a PR probe:\n{gh_calls}"
+    );
+}
+
+#[test]
 fn drain_records_a_blocked_settle_and_continues_to_the_next_bead() {
     let workspace = TempDir::new("drain-blocked-continues");
     let fake_bin = workspace.0.join("fake-bin");
@@ -607,7 +727,9 @@ fn run_absent_closed_pr_sweep(
         &fake_br,
         format!(
             "#!/bin/sh\n\
-             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+             if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\n'\n\
+             elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\n' '{ready_json}'\n\
@@ -790,7 +912,9 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
         &fake_br,
         format!(
             "#!/bin/sh\n\
-             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+             if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+             elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\
@@ -926,7 +1050,9 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
         &fake_br,
         format!(
             "#!/bin/sh\n\
-             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+             if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"closed\"}}]}}\\n'\n\
+             elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '{{\"issues\":[]}}\\n'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                IFS= read -r current_phase < '{phase}'\n\
@@ -1132,7 +1258,9 @@ fn run_merged_pr_sweep(
         &fake_br,
         format!(
             "#!/bin/sh\n\
-             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+             if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
+               printf '%s\n' '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"{bead_status}\"}}]}}'\n\
+             elif [ \"$1 $2\" = \"list --json\" ]; then\n\
                printf '%s\n' '{listed_beads}'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                printf '%s\n' '[{{\"id\":\"it-lost\",\"title\":\"lost claim\",\"priority\":0,\"labels\":[]}}]'\n\

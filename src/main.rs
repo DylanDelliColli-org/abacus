@@ -898,6 +898,33 @@ fn parse_local_lane_branch_ids(refs: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn lane_candidate_ids(
+    listed_beads: Vec<ListedLaneBead>,
+    all_status_beads: Vec<ListedLaneBead>,
+    local_lane_branch_ids: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut candidate_ids: BTreeSet<_> = listed_beads
+        .into_iter()
+        .filter(|bead| bead.status == "in_progress" || bead.status == "closed")
+        .map(|bead| bead.id)
+        .collect();
+    let statuses: BTreeMap<_, _> = all_status_beads
+        .into_iter()
+        .map(|bead| (bead.id, bead.status))
+        .collect();
+    candidate_ids.extend(
+        local_lane_branch_ids
+            .iter()
+            .filter(|bead_id| {
+                statuses
+                    .get(bead_id.as_str())
+                    .is_some_and(|status| status == "in_progress" || status == "closed")
+            })
+            .cloned(),
+    );
+    candidate_ids
+}
+
 fn agent_belongs_to_repo(agent: &AgentView, repo: &Path) -> bool {
     let Some(repo_name) = repo.file_name() else {
         return false;
@@ -923,12 +950,6 @@ fn sweep_live_lanes(
         .into_iter()
         .filter(|agent| agent.name.is_some() && agent_belongs_to_repo(agent, repo))
         .collect();
-    let listed_beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
-    let mut bead_ids: BTreeSet<_> = listed_beads
-        .into_iter()
-        .filter(|bead| bead.status == "in_progress" || bead.status == "closed")
-        .map(|bead| bead.id)
-        .collect();
     let local_lane_refs = capture(
         "git",
         &[
@@ -938,7 +959,14 @@ fn sweep_live_lanes(
         ],
         Some(repo),
     )?;
-    bead_ids.extend(parse_local_lane_branch_ids(&local_lane_refs));
+    let local_lane_branch_ids = parse_local_lane_branch_ids(&local_lane_refs);
+    let listed_beads = parse_lane_beads(&capture("br", &["list", "--json"], Some(repo))?)?;
+    let all_status_beads = parse_lane_beads(&capture(
+        "br",
+        &["list", "--json", "--status", "all"],
+        Some(repo),
+    )?)?;
+    let bead_ids = lane_candidate_ids(listed_beads, all_status_beads, &local_lane_branch_ids);
     let mut authoring = false;
     for bead_id in bead_ids {
         if absorbed_terminal_beads.contains(&bead_id) {
@@ -1553,6 +1581,57 @@ mod tests {
         assert_eq!(
             parse_local_lane_branch_ids(refs),
             BTreeSet::from(["ab-closed".to_owned(), "ab-in-progress".to_owned()])
+        );
+    }
+
+    #[test]
+    fn lane_candidates_exclude_tracker_lifecycle_statuses_before_probing() {
+        let listed_beads = vec![
+            ListedLaneBead {
+                id: "ab-in-progress".into(),
+                status: "in_progress".into(),
+            },
+            ListedLaneBead {
+                id: "ab-listed-closed".into(),
+                status: "closed".into(),
+            },
+            ListedLaneBead {
+                id: "ab-listed-deferred".into(),
+                status: "deferred".into(),
+            },
+        ];
+        let all_status_beads = vec![
+            ListedLaneBead {
+                id: "ab-closed".into(),
+                status: "closed".into(),
+            },
+            ListedLaneBead {
+                id: "ab-deferred".into(),
+                status: "deferred".into(),
+            },
+            ListedLaneBead {
+                id: "ab-open".into(),
+                status: "open".into(),
+            },
+            ListedLaneBead {
+                id: "ab-future".into(),
+                status: "tombstone".into(),
+            },
+        ];
+        let lane_branches = BTreeSet::from([
+            "ab-closed".to_owned(),
+            "ab-deferred".to_owned(),
+            "ab-open".to_owned(),
+            "ab-future".to_owned(),
+        ]);
+
+        assert_eq!(
+            lane_candidate_ids(listed_beads, all_status_beads, &lane_branches),
+            BTreeSet::from([
+                "ab-closed".to_owned(),
+                "ab-in-progress".to_owned(),
+                "ab-listed-closed".to_owned(),
+            ])
         );
     }
 
