@@ -3,6 +3,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::Duration;
 use std::{collections::BTreeSet, fs::OpenOptions, io::Write};
 
 struct TempDir(PathBuf);
@@ -108,12 +109,121 @@ fn run_land(repo: &Path, fake_bin: &Path) -> Output {
         std::env::split_paths(&std::env::var_os("PATH").expect("test PATH must be set")),
     ))
     .unwrap();
-    Command::new(env!("CARGO_BIN_EXE_abacus"))
-        .args(["land", repo.to_str().unwrap(), "--once"])
-        .env("PATH", path)
-        .env("ABACUS_LAND_POLL_MILLIS", "0")
+    run_land_with_retry(
+        || {
+            Command::new(env!("CARGO_BIN_EXE_abacus"))
+                .args(["land", repo.to_str().unwrap(), "--once"])
+                .env("PATH", &path)
+                .env("ABACUS_LAND_POLL_MILLIS", "0")
+                .output()
+                .unwrap()
+        },
+        std::thread::sleep,
+    )
+}
+
+fn run_land_with_retry<Run, Delay>(mut run: Run, delay: Delay) -> Output
+where
+    Run: FnMut() -> Output,
+    Delay: FnOnce(Duration),
+{
+    const TEXT_FILE_BUSY: &str = "Text file busy";
+
+    let first = run();
+    if !first.status.success() && String::from_utf8_lossy(&first.stderr).contains(TEXT_FILE_BUSY) {
+        delay(Duration::from_millis(100));
+        let retry = run();
+        assert!(
+            retry.status.success(),
+            "abacus land failed (retried once)\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&retry.stdout),
+            String::from_utf8_lossy(&retry.stderr)
+        );
+        return retry;
+    }
+
+    first
+}
+
+#[test]
+fn run_land_retries_text_file_busy_once_after_100_milliseconds() {
+    let attempts = std::cell::Cell::new(0);
+    let observed_delay = std::cell::Cell::new(None);
+
+    let output = run_land_with_retry(
+        || {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                shell_output(
+                    "printf '%s' 'failed to spawn gh: Text file busy (os error 26)' >&2; exit 1",
+                )
+            } else {
+                shell_output("printf '%s' retried-output")
+            }
+        },
+        |delay| observed_delay.set(Some(delay)),
+    );
+
+    assert_eq!(attempts.get(), 2);
+    assert_eq!(observed_delay.get(), Some(Duration::from_millis(100)));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "retried-output");
+}
+
+#[test]
+fn run_land_does_not_retry_a_different_failure() {
+    let attempts = std::cell::Cell::new(0);
+
+    let output = run_land_with_retry(
+        || {
+            attempts.set(attempts.get() + 1);
+            shell_output("printf '%s' 'failed to spawn gh: text file busy' >&2; exit 1")
+        },
+        |_| panic!("a non-matching failure must not be delayed or retried"),
+    );
+
+    assert_eq!(attempts.get(), 1);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("text file busy"));
+}
+
+#[test]
+fn run_land_marks_a_failed_retry_loudly() {
+    let attempts = std::cell::Cell::new(0);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_land_with_retry(
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() == 1 {
+                    shell_output("printf '%s' 'Text file busy' >&2; exit 1")
+                } else {
+                    shell_output("printf '%s' 'second land failure' >&2; exit 1")
+                }
+            },
+            |_| {},
+        );
+    }))
+    .expect_err("a failed retry must panic");
+
+    assert_eq!(attempts.get(), 2);
+    let message = panic_message(&panic);
+    assert!(message.contains("retried once"));
+    assert!(message.contains("second land failure"));
+}
+
+fn shell_output(script: &str) -> Output {
+    Command::new("sh")
+        .args(["-c", script])
         .output()
-        .unwrap()
+        .expect("sh must be available to exercise the land helper")
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> &str {
+    panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("panic must carry a string message")
 }
 
 fn run_ok(program: &str, args: &[&str], cwd: Option<&Path>) -> String {
