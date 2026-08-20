@@ -300,8 +300,8 @@ fn current_codex_context_percent(pane: &str) -> Option<u8> {
     })
 }
 
-fn should_nudge_after_settle(pane: &str) -> bool {
-    current_codex_context_percent(pane) == Some(0)
+fn should_nudge_after_settle(baseline_context: Option<u8>, pane: &str) -> bool {
+    baseline_context.is_some() && current_codex_context_percent(pane) == baseline_context
 }
 
 fn pasted_composer_is_visible(pane: &str) -> bool {
@@ -337,7 +337,16 @@ pub fn prompt_agent(
     prompt: &str,
     stall_context: &str,
 ) -> Result<PromptOutcome, String> {
-    prompt_agent_with_tracker_probe(agent_name, pane_id, prompt, stall_context, || Ok(None))
+    let baseline_pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
+    let baseline_context = current_codex_context_percent(&baseline_pane);
+    prompt_agent_with_tracker_probe(
+        agent_name,
+        pane_id,
+        prompt,
+        stall_context,
+        baseline_context,
+        || Ok(None),
+    )
 }
 
 fn prompt_agent_with_tracker_probe<Probe>(
@@ -345,6 +354,7 @@ fn prompt_agent_with_tracker_probe<Probe>(
     pane_id: &str,
     prompt: &str,
     stall_context: &str,
+    baseline_context: Option<u8>,
     mut tracker_probe: Probe,
 ) -> Result<PromptOutcome, String>
 where
@@ -367,7 +377,7 @@ where
     }
 
     let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
-    if !should_nudge_after_settle(&pane) {
+    if !should_nudge_after_settle(baseline_context, &pane) {
         return Ok(match tracker_outcome {
             Some(outcome) => PromptOutcome::TrackerObserved { settled, outcome },
             None => PromptOutcome::Settled(settled),
@@ -379,7 +389,13 @@ where
     } else {
         "composer not yet visible or empty"
     };
-    eprintln!("agent prompt had a zero-effect settle ({composer_diagnostic}); nudging Enter once");
+    let baseline_diagnostic = baseline_context
+        .map(|percent| format!("context unchanged at {percent}%"))
+        .unwrap_or_else(|| "context baseline unavailable".to_owned());
+    eprintln!(
+        "agent prompt had a zero-effect settle ({baseline_diagnostic}; {composer_diagnostic}); \
+         nudging Enter once"
+    );
     capture("herdr", &["agent", "send-keys", agent_name, "Enter"], None)?;
     if let Err(error) = capture(
         "herdr",
@@ -432,11 +448,18 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
+    let baseline_pane = capture(
+        "herdr",
+        &["pane", "read", &lane.pane_id, "--lines", "40"],
+        None,
+    )?;
+    let baseline_context = current_codex_context_percent(&baseline_pane);
     let outcome = prompt_agent_with_tracker_probe(
         agent_name,
         &lane.pane_id,
         &prompt,
         "worker startup",
+        baseline_context,
         || tracker_outcome(repo, &bead.id),
     )?;
     if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
@@ -480,11 +503,18 @@ pub fn lane_prompt_rework(
     adjudication: &Adjudication,
 ) -> Result<PromptOutcome, String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
+    let baseline_pane = capture(
+        "herdr",
+        &["pane", "read", &lane.pane_id, "--lines", "40"],
+        None,
+    )?;
+    let baseline_context = current_codex_context_percent(&baseline_pane);
     let outcome = prompt_agent_with_tracker_probe(
         agent_name,
         &lane.pane_id,
         &prompt,
         "recovered startup",
+        baseline_context,
         || tracker_outcome(repo, bead_id),
     )?;
     if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
@@ -735,25 +765,35 @@ mod tests {
     #[test]
     fn zero_effect_settle_nudges_before_pasted_composer_renders() {
         let pane = "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n";
-        assert!(should_nudge_after_settle(pane));
+        assert!(should_nudge_after_settle(Some(0), pane));
         assert!(!pasted_composer_is_visible(pane));
     }
 
     #[test]
     fn zero_effect_settle_nudges_when_pasted_composer_is_visible() {
         let pane = "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n";
-        assert!(should_nudge_after_settle(pane));
+        assert!(should_nudge_after_settle(Some(0), pane));
         assert!(pasted_composer_is_visible(pane));
     }
 
     #[test]
     fn engaged_settle_does_not_nudge() {
         assert!(!should_nudge_after_settle(
+            Some(0),
             "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
         ));
         assert!(!should_nudge_after_settle(
+            Some(0),
             "• Worker completed and reported the literal diagnostic Context 0% used\n\n\
              gpt-5.6-sol high fast · /workspace · Approve for me · Context 24% used · weekly 92% left\n"
+        ));
+    }
+
+    #[test]
+    fn unchanged_warm_context_is_a_zero_effect_settle() {
+        assert!(should_nudge_after_settle(
+            Some(24),
+            "› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24% used\n"
         ));
     }
 

@@ -1089,6 +1089,7 @@ fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
     let br_calls = workspace.0.join("br-calls");
     let herdr_calls = workspace.0.join("herdr-calls");
     let gh_calls = workspace.0.join("gh-calls");
+    let first_pane_read = workspace.0.join("first-pane-read");
 
     let fake_br = fake_bin.join("br");
     std::fs::write(
@@ -1117,12 +1118,18 @@ fn run_routes_reopened_rework_to_existing_warm_agent_before_fresh_dispatch() {
              elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ]; then\n\
                printf 'rework settled\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
-               printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+               if [ -f '{first_pane_read}' ]; then\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 25%% used\\n'\n\
+               else\n\
+                 : > '{first_pane_read}'\n\
+                 printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+               fi\n\
              elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf 'fatal: lane/{bead_id} is already checked out\\n' >&2; exit 128\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
             calls = herdr_calls.display(),
             root = workspace.0.display(),
+            first_pane_read = first_pane_read.display(),
         ),
     )
     .unwrap();
@@ -1451,13 +1458,18 @@ elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
 elif [ "$1 $2" = "pane read" ]; then
   if [ "{prompt_remains_pasted}" = "true" ]; then
     if [ -f '{first_pane_read}' ]; then
-      printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 0%% used\n'
+      printf '› [Pasted Content 733 chars]\n\n  gpt-5.6-sol high · Context 24%% used\n'
     else
       : > '{first_pane_read}'
-      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0%% used\n'
+      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
     fi
   else
-    printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+    if [ -f '{first_pane_read}' ]; then
+      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 25%% used\n'
+    else
+      : > '{first_pane_read}'
+      printf '› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24%% used\n'
+    fi
   fi
 elif [ "$1 $2 $3" = "agent send-keys {bead_id}" ]; then
   printf 'nudge-rework\n' >> '{events}'
@@ -1600,8 +1612,8 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        1,
-        "composer rendering must remain diagnostic rather than gate recovery:\n{herdr_calls}"
+        2,
+        "baseline-relative recovery must read once before and once after the prompt:\n{herdr_calls}"
     );
     assert_eq!(
         herdr_calls
@@ -1901,6 +1913,7 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
     let posted_status = workspace.0.join("posted-status");
     let gh_calls = workspace.0.join("gh-calls");
     let herdr_calls = workspace.0.join("herdr-calls");
+    let first_pane_read = workspace.0.join("first-pane-read");
     std::fs::write(&phase, "1\n").unwrap();
 
     let fake_br = fake_bin.join("br");
@@ -1947,13 +1960,16 @@ fn sweep_posts_pending_once_then_flips_success_only_after_an_accepting_adjudicat
              elif [ \"$1 $2\" = \"agent start\" ]; then exit 0\n\
              elif [ \"$1 $2 $3\" = \"agent prompt {bead_id}\" ] && [ \"$current_phase\" = \"3\" ]; then printf '4\\n' > '{phase}'; printf 'rework settled\\n'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then printf 'reviewer settled\\n'\n\
-             elif [ \"$1 $2\" = \"pane read\" ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               if [ -f '{first_pane_read}' ]; then printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 25%% used\\n'\n\
+               else : > '{first_pane_read}'; printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'; fi\n\
              elif [ \"$1 $2 $3\" = \"workspace close reviewer-workspace\" ]; then exit 0\n\
              else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
             calls = herdr_calls.display(),
             phase = phase.display(),
             bead_id = bead_id,
             root = workspace.0.display(),
+            first_pane_read = first_pane_read.display(),
         ),
     )
     .unwrap();

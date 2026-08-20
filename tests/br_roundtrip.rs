@@ -1406,7 +1406,15 @@ fn abacus_run_tracker_completed_short_circuits_mixed_meter_pane_recovery() {
         String::from_utf8_lossy(&out.stderr)
     );
     let calls = std::fs::read_to_string(calls).unwrap();
-    for forbidden in ["pane read", "agent send-keys", "agent wait"] {
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        1,
+        "completed settle must capture only its pre-prompt baseline:\n{calls}"
+    );
+    for forbidden in ["agent send-keys", "agent wait"] {
         assert!(
             !calls.lines().any(|call| call.starts_with(forbidden)),
             "tracker-completed settle reached forbidden {forbidden:?} recovery call:\n{calls}"
@@ -1834,8 +1842,8 @@ fn abacus_run_nudges_a_three_frame_late_paste_without_waiting_for_composer_rende
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        1,
-        "composer rendering must remain diagnostic rather than gate recovery:\n{calls}"
+        2,
+        "fresh recovery must compare pre-prompt and post-settle diagnostics:\n{calls}"
     );
     assert_eq!(
         calls
@@ -1959,8 +1967,8 @@ fn abacus_run_nudges_an_empty_zero_context_composer_then_classifies_never_engage
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        1,
-        "empty-composer diagnosis should need one pane read:\n{calls}"
+        2,
+        "empty-composer recovery must compare pre-prompt and post-settle diagnostics:\n{calls}"
     );
     assert_eq!(
         calls
@@ -2097,7 +2105,15 @@ fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
     assert!(stdout.contains(&format!("blocked: 1 [{first}")));
     assert!(stdout.contains(&format!("completed: 1 [{second}")));
     let calls = std::fs::read_to_string(herdr_calls).unwrap();
-    for forbidden in ["pane read", "agent send-keys", "agent wait"] {
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("pane read "))
+            .count(),
+        2,
+        "each terminal lane must capture only its pre-prompt baseline:\n{calls}"
+    );
+    for forbidden in ["agent send-keys", "agent wait"] {
         assert!(
             !calls.lines().any(|call| call.starts_with(forbidden)),
             "terminal tracker settle reached forbidden {forbidden:?} recovery call:\n{calls}"
