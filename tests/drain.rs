@@ -1588,8 +1588,8 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
     assert_eq!(events, "nudge-rework\n");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("rechecking once"),
-        "the late composer render was not observed through a logged recheck:\n{stderr}"
+        stderr.contains("zero-effect settle"),
+        "the zero-effect recovery decision was not logged:\n{stderr}"
     );
     assert!(
         stderr.contains("nudging Enter once"),
@@ -1600,8 +1600,8 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
             .lines()
             .filter(|call| call.starts_with("pane read "))
             .count(),
-        2,
-        "the false-success settle must receive exactly one bounded pane recheck:\n{herdr_calls}"
+        1,
+        "composer rendering must remain diagnostic rather than gate recovery:\n{herdr_calls}"
     );
     assert_eq!(
         herdr_calls

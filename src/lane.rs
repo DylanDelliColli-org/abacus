@@ -276,15 +276,6 @@ pub fn lane_open_existing_worktree(
     Ok(lane)
 }
 
-fn has_unsubmitted_codex_prompt(pane: &str) -> bool {
-    let tail = pane.lines().rev().take(12).collect::<Vec<_>>();
-    let pasted_composer = tail.iter().any(|line| {
-        let line = line.trim_start();
-        line.starts_with('›') && line.contains("Pasted Content") && line.contains("chars")
-    });
-    pasted_composer && has_untouched_codex_context(pane)
-}
-
 fn has_untouched_codex_context(pane: &str) -> bool {
     pane.lines()
         .rev()
@@ -292,25 +283,15 @@ fn has_untouched_codex_context(pane: &str) -> bool {
         .any(|line| line.contains("Context 0% used"))
 }
 
-fn detect_unsubmitted_codex_prompt<Read, Delay>(
-    mut read_pane: Read,
-    delay: Delay,
-) -> Result<bool, String>
-where
-    Read: FnMut() -> Result<String, String>,
-    Delay: FnOnce(Duration),
-{
-    let first = read_pane()?;
-    if has_unsubmitted_codex_prompt(&first) {
-        return Ok(true);
-    }
-    if !has_untouched_codex_context(&first) {
-        return Ok(false);
-    }
+fn should_nudge_after_settle(pane: &str) -> bool {
+    has_untouched_codex_context(pane)
+}
 
-    eprintln!("agent prompt settled at zero context before composer rendered; rechecking once");
-    delay(Duration::from_millis(100));
-    read_pane().map(|pane| has_unsubmitted_codex_prompt(&pane))
+fn pasted_composer_is_visible(pane: &str) -> bool {
+    pane.lines().rev().take(12).any(|line| {
+        let line = line.trim_start();
+        line.starts_with('›') && line.contains("Pasted Content") && line.contains("chars")
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,10 +303,11 @@ pub enum PromptOutcome {
 /// Prompt an agent through the shared startup-race seam.
 ///
 /// Herdr can report a successful settled prompt while a fresh Codex TUI still
-/// holds the paste in its composer. The terminal signature is precise: the
-/// composer contains Codex's collapsed `Pasted Content` marker and the context
-/// meter remains at zero. Submit that existing paste with one Enter, observe
-/// the turn start, then wait for its terminal state instead of pasting again.
+/// has produced no worker-authored progress. A zero-context settle receives
+/// one Enter regardless of whether Codex has rendered its collapsed pasted
+/// composer yet. The composer rendering is logged only as diagnostic evidence;
+/// it never gates recovery. Observe the turn start, then wait for its terminal
+/// state instead of pasting again.
 pub fn prompt_agent(
     agent_name: &str,
     pane_id: &str,
@@ -342,13 +324,17 @@ pub fn prompt_agent(
         Err(error) => return Err(error),
     };
 
-    let pane_args = ["pane", "read", pane_id, "--lines", "40"];
-    if !detect_unsubmitted_codex_prompt(|| capture("herdr", &pane_args, None), std::thread::sleep)?
-    {
+    let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
+    if !should_nudge_after_settle(&pane) {
         return Ok(PromptOutcome::Settled(settled));
     }
 
-    eprintln!("agent prompt remained pasted after settle; nudging Enter once");
+    let composer_diagnostic = if pasted_composer_is_visible(&pane) {
+        "pasted composer visible"
+    } else {
+        "composer not yet visible or empty"
+    };
+    eprintln!("agent prompt had a zero-effect settle ({composer_diagnostic}); nudging Enter once");
     capture("herdr", &["agent", "send-keys", agent_name, "Enter"], None)?;
     if let Err(error) = capture(
         "herdr",
@@ -677,64 +663,24 @@ mod tests {
     }
 
     #[test]
-    fn unsubmitted_prompt_requires_pasted_composer_and_untouched_context() {
-        let captured_race = "\
-• Ran herdr agent prompt ab-example <prompt> --wait\n\
-  └ agent_prompted\n\n\
-› [Pasted Content 1004 chars]\n\n\
-  gpt-5.6-sol high · Context 0% used\n";
-        assert!(has_unsubmitted_codex_prompt(captured_race));
-
-        let engaged_worker = captured_race.replace("Context 0% used", "Context 24% used");
-        assert!(!has_unsubmitted_codex_prompt(&engaged_worker));
-
-        let transcript_only = captured_race.replace(
-            "› [Pasted Content 1004 chars]",
-            "• Diagnosed a Pasted Content 1004 chars report",
-        );
-        assert!(!has_unsubmitted_codex_prompt(&transcript_only));
+    fn zero_effect_settle_nudges_before_pasted_composer_renders() {
+        let pane = "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n";
+        assert!(should_nudge_after_settle(pane));
+        assert!(!pasted_composer_is_visible(pane));
     }
 
     #[test]
-    fn unsubmitted_prompt_detection_rechecks_one_zero_context_render() {
-        let mut panes = [
-            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 0% used\n",
-            "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n",
-        ]
-        .into_iter();
-        let mut observed_delay = None;
-
-        let detected = detect_unsubmitted_codex_prompt(
-            || {
-                Ok(panes
-                    .next()
-                    .expect("detection must read at most twice")
-                    .into())
-            },
-            |delay| observed_delay = Some(delay),
-        )
-        .unwrap();
-
-        assert!(detected);
-        assert_eq!(observed_delay, Some(Duration::from_millis(100)));
-        assert!(panes.next().is_none(), "detection read more than twice");
+    fn zero_effect_settle_nudges_when_pasted_composer_is_visible() {
+        let pane = "› [Pasted Content 1004 chars]\n\n  gpt-5.6-sol high · Context 0% used\n";
+        assert!(should_nudge_after_settle(pane));
+        assert!(pasted_composer_is_visible(pane));
     }
 
     #[test]
-    fn unsubmitted_prompt_detection_does_not_recheck_an_engaged_render() {
-        let mut reads = 0;
-
-        let detected = detect_unsubmitted_codex_prompt(
-            || {
-                reads += 1;
-                Ok("› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n".into())
-            },
-            |_| panic!("an engaged pane must not be delayed or re-read"),
-        )
-        .unwrap();
-
-        assert!(!detected);
-        assert_eq!(reads, 1);
+    fn engaged_settle_does_not_nudge() {
+        assert!(!should_nudge_after_settle(
+            "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+        ));
     }
 
     #[test]
