@@ -1321,7 +1321,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead() {
+fn abacus_run_tracker_completed_short_circuits_mixed_meter_pane_recovery() {
     require_br!();
     let ws = TempWorkspace::new("closed-outcome");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1358,6 +1358,14 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
                cd '{}'\n\
                br update '{}' --claim\n\
                br close '{}'\n\
+               printf '{{\"result\":{{\"type\":\"agent_prompted\",\"agent\":{{\"agent_status\":\"done\"}}}}}}\\n'\n\
+             elif [ \"$1 $2\" = \"pane read\" ]; then\n\
+               printf '• Worker completed and reported the literal diagnostic Context 0%% used\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
+             elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
+               printf 'completed lane received an unnecessary recovery wait\\n' >&2\n\
+               exit 9\n\
              fi\n",
             calls.display(),
             lane_json,
@@ -1398,6 +1406,12 @@ fn abacus_run_reaps_a_clean_lane_without_force_after_the_worker_closes_its_bead(
         String::from_utf8_lossy(&out.stderr)
     );
     let calls = std::fs::read_to_string(calls).unwrap();
+    for forbidden in ["pane read", "agent send-keys", "agent wait"] {
+        assert!(
+            !calls.lines().any(|call| call.starts_with(forbidden)),
+            "tracker-completed settle reached forbidden {forbidden:?} recovery call:\n{calls}"
+        );
+    }
     let removal_calls: Vec<_> = calls
         .lines()
         .filter(|call| call.starts_with("worktree remove"))
@@ -2082,6 +2096,13 @@ fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
     );
     assert!(stdout.contains(&format!("blocked: 1 [{first}")));
     assert!(stdout.contains(&format!("completed: 1 [{second}")));
+    let calls = std::fs::read_to_string(herdr_calls).unwrap();
+    for forbidden in ["pane read", "agent send-keys", "agent wait"] {
+        assert!(
+            !calls.lines().any(|call| call.starts_with(forbidden)),
+            "terminal tracker settle reached forbidden {forbidden:?} recovery call:\n{calls}"
+        );
+    }
 }
 
 #[cfg(unix)]

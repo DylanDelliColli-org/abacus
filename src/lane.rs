@@ -276,15 +276,32 @@ pub fn lane_open_existing_worktree(
     Ok(lane)
 }
 
-fn has_untouched_codex_context(pane: &str) -> bool {
-    pane.lines()
-        .rev()
-        .take(12)
-        .any(|line| line.contains("Context 0% used"))
+fn current_codex_context_percent(pane: &str) -> Option<u8> {
+    pane.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let model = line.split_whitespace().next()?;
+        let model_identity = model
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-'))
+            && model
+                .chars()
+                .any(|character| character.is_ascii_alphabetic())
+            && model.chars().any(|character| character.is_ascii_digit());
+        if !model_identity {
+            return None;
+        }
+
+        let (_, context) = line.rsplit_once(" · Context ")?;
+        let (percent, suffix) = context.split_once("% used")?;
+        if !suffix.is_empty() && !suffix.starts_with(" · ") {
+            return None;
+        }
+        percent.parse().ok()
+    })
 }
 
 fn should_nudge_after_settle(pane: &str) -> bool {
-    has_untouched_codex_context(pane)
+    current_codex_context_percent(pane) == Some(0)
 }
 
 fn pasted_composer_is_visible(pane: &str) -> bool {
@@ -297,7 +314,13 @@ fn pasted_composer_is_visible(pane: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptOutcome {
     Settled(String),
-    NeverEngaged { error: String },
+    TrackerObserved {
+        settled: String,
+        outcome: BeadOutcome,
+    },
+    NeverEngaged {
+        error: String,
+    },
 }
 
 /// Prompt an agent through the shared startup-race seam.
@@ -314,6 +337,19 @@ pub fn prompt_agent(
     prompt: &str,
     stall_context: &str,
 ) -> Result<PromptOutcome, String> {
+    prompt_agent_with_tracker_probe(agent_name, pane_id, prompt, stall_context, || Ok(None))
+}
+
+fn prompt_agent_with_tracker_probe<Probe>(
+    agent_name: &str,
+    pane_id: &str,
+    prompt: &str,
+    stall_context: &str,
+    mut tracker_probe: Probe,
+) -> Result<PromptOutcome, String>
+where
+    Probe: FnMut() -> Result<Option<BeadOutcome>, String>,
+{
     let prompt_args = ["agent", "prompt", agent_name, prompt, "--wait"];
     let settled = match capture("herdr", &prompt_args, None) {
         Ok(settled) => settled,
@@ -324,9 +360,18 @@ pub fn prompt_agent(
         Err(error) => return Err(error),
     };
 
+    let tracker_outcome = tracker_probe()?;
+    if let Some(outcome @ (BeadOutcome::Completed | BeadOutcome::Blocked)) = tracker_outcome {
+        eprintln!("tracker reported {outcome:?} after settle; skipping pane recovery");
+        return Ok(PromptOutcome::TrackerObserved { settled, outcome });
+    }
+
     let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
     if !should_nudge_after_settle(&pane) {
-        return Ok(PromptOutcome::Settled(settled));
+        return Ok(match tracker_outcome {
+            Some(outcome) => PromptOutcome::TrackerObserved { settled, outcome },
+            None => PromptOutcome::Settled(settled),
+        });
     }
 
     let composer_diagnostic = if pasted_composer_is_visible(&pane) {
@@ -352,18 +397,26 @@ pub fn prompt_agent(
         eprintln!("Enter nudge produced no observed worker turn: {error}");
         return Ok(PromptOutcome::NeverEngaged { error });
     }
-    capture(
+    let settled = capture(
         "herdr",
         &[
             "agent", "wait", agent_name, "--until", "done", "--until", "blocked",
         ],
         None,
-    )
-    .map(PromptOutcome::Settled)
+    )?;
+    if let Some(outcome) = tracker_probe()? {
+        return Ok(PromptOutcome::TrackerObserved { settled, outcome });
+    }
+    Ok(PromptOutcome::Settled(settled))
+}
+
+fn tracker_outcome(repo: &Path, bead_id: &str) -> Result<Option<BeadOutcome>, String> {
+    probe_bead_outcome(repo, bead_id).map(Some)
 }
 
 /// Dispatch the initial worker prompt, retrying the observed startup race once.
 pub fn lane_prompt(
+    repo: &Path,
     bead: &ReadyBead,
     lane: &Lane,
     default_branch: &str,
@@ -379,8 +432,16 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "worker startup")?;
-    if let PromptOutcome::Settled(settled) = &outcome {
+    let outcome = prompt_agent_with_tracker_probe(
+        agent_name,
+        &lane.pane_id,
+        &prompt,
+        "worker startup",
+        || tracker_outcome(repo, &bead.id),
+    )?;
+    if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
+        &outcome
+    {
         println!("{}", settled.trim_end());
     }
     Ok(outcome)
@@ -412,14 +473,23 @@ pub fn rework_prompt(bead_id: &str, branch: &str, adjudication: &Adjudication) -
 }
 
 pub fn lane_prompt_rework(
+    repo: &Path,
     bead_id: &str,
     lane: &Lane,
     agent_name: &str,
     adjudication: &Adjudication,
 ) -> Result<PromptOutcome, String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
-    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "recovered startup")?;
-    if let PromptOutcome::Settled(settled) = &outcome {
+    let outcome = prompt_agent_with_tracker_probe(
+        agent_name,
+        &lane.pane_id,
+        &prompt,
+        "recovered startup",
+        || tracker_outcome(repo, bead_id),
+    )?;
+    if let PromptOutcome::Settled(settled) | PromptOutcome::TrackerObserved { settled, .. } =
+        &outcome
+    {
         println!("{}", settled.trim_end());
     }
     Ok(outcome)
@@ -680,6 +750,10 @@ mod tests {
     fn engaged_settle_does_not_nudge() {
         assert!(!should_nudge_after_settle(
             "› Ask Codex to do anything\n\n  gpt-5.6-sol high · Context 24% used\n"
+        ));
+        assert!(!should_nudge_after_settle(
+            "• Worker completed and reported the literal diagnostic Context 0% used\n\n\
+             gpt-5.6-sol high fast · /workspace · Approve for me · Context 24% used · weekly 92% left\n"
         ));
     }
 
