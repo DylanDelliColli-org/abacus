@@ -332,6 +332,125 @@ fn drain_enumerates_a_closed_bead_from_its_local_lane_branch() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn drain_skips_a_real_deferred_bead_with_a_local_lane_branch() {
+    require_br!();
+    let ws = TempWorkspace::new("deferred-lane-candidate");
+    git(
+        &ws.0,
+        &[
+            "-c",
+            "user.name=Abacus Integration Test",
+            "-c",
+            "user.email=abacus@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "seed deferred lane candidate",
+        ],
+    );
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let deferred_id = br(&ws.0, &["create", "--title=deferred fence", "--silent"])
+        .trim()
+        .to_owned();
+    br(&ws.0, &["defer", &deferred_id]);
+    git(&ws.0, &["branch", &format!("lane/{deferred_id}")]);
+    let ready_id = br(&ws.0, &["create", "--title=ready worker", "--silent"])
+        .trim()
+        .to_owned();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let real_br = find_on_path("br").expect("guarded by require_br");
+    let br_calls = ws.0.join("br-calls");
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            br_calls.display(),
+            real_br.display(),
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_br).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_br, permissions).unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    let herdr_calls = ws.0.join("herdr-calls");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"ready-workspace\"}},\"root_pane\":{{\"pane_id\":\"ready-pane\"}},\"worktree\":{{\"path\":\"{}\",\"branch\":\"lane/{}\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               cd '{}'\n\
+               br close '{}'\n\
+               printf 'worker settled\\n'\n\
+             fi\n",
+            herdr_calls.display(),
+            ws.0.display(),
+            ready_id,
+            ws.0.display(),
+            ready_id,
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&fake_herdr).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&fake_herdr, permissions).unwrap();
+    install_no_pr_gh_stub(&fake_bin);
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", ws.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains(&format!("completed: 1 [{ready_id}")),
+        "the ready bead was not dispatched and reported: {stdout}"
+    );
+    assert!(
+        !stdout.contains(&deferred_id),
+        "the deferred bead leaked into the morning report: {stdout}"
+    );
+    let calls = std::fs::read_to_string(br_calls).unwrap();
+    assert!(
+        !calls
+            .lines()
+            .any(|call| call.starts_with(&format!("show {deferred_id} "))),
+        "the deferred bead must be filtered before br show:\n{calls}"
+    );
+    assert!(
+        std::fs::read_to_string(herdr_calls)
+            .unwrap()
+            .lines()
+            .any(|call| call.starts_with("worktree create") && call.contains(&ready_id)),
+        "the ready bead was not dispatched"
+    );
+    assert!(
+        br(&ws.0, &["show", &deferred_id, "--json"]).contains(r#""status":"deferred""#),
+        "the deferred fence must remain deferred"
+    );
+    assert_eq!(
+        parse_bead_outcome(&br(&ws.0, &["show", &ready_id, "--json"])).unwrap(),
+        BeadOutcome::Completed
+    );
+}
+
 #[test]
 fn temp_workspace_allocations_with_the_same_tag_are_isolated() {
     let first = TempWorkspace::new("repeated-tag");
