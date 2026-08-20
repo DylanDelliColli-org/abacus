@@ -696,6 +696,7 @@ enum DispatchCycle {
     Settled(SettledLane),
     ClaimLost(String),
     ReworkRouted(String),
+    ExistingLaneSkipped(String),
 }
 
 struct SettledLane {
@@ -714,7 +715,16 @@ fn resolve_repo(repo: &Path) -> Result<PathBuf, String> {
 fn cmd_run(repo: &Path) -> Result<i32, String> {
     let repo = resolve_repo(repo)?;
     let repo_str = repo.to_string_lossy().into_owned();
-    match dispatch_cycle(&repo, &repo_str, &BTreeSet::new(), false)? {
+    let mut skipped_existing_lanes = BTreeSet::new();
+    let dispatch = loop {
+        let dispatch = dispatch_cycle(&repo, &repo_str, &skipped_existing_lanes, false)?;
+        if let DispatchCycle::ExistingLaneSkipped(bead_id) = dispatch {
+            skipped_existing_lanes.insert(bead_id);
+        } else {
+            break dispatch;
+        }
+    };
+    match dispatch {
         DispatchCycle::Empty => {
             println!("no ready beads in {repo_str}; nothing to dispatch");
             Ok(0)
@@ -810,13 +820,16 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
             println!("bead {bead_id} rework completed; existing lane remains warm");
             Ok(0)
         }
+        DispatchCycle::ExistingLaneSkipped(_) => {
+            unreachable!("run filters skipped existing lanes before dispatch handling")
+        }
     }
 }
 
 fn cmd_drain(repo: &Path) -> Result<(), String> {
     let repo = resolve_repo(repo)?;
     let repo_str = repo.to_string_lossy().into_owned();
-    let mut lost_claims = BTreeSet::new();
+    let mut bypassed_beads = BTreeSet::new();
     let mut report = MorningReport::default();
     let mut reported_states = BTreeSet::new();
     let mut launched_reviewers = BTreeSet::new();
@@ -836,7 +849,7 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
             std::thread::sleep(Duration::from_secs(2));
             continue;
         }
-        match dispatch_cycle(&repo, &repo_str, &lost_claims, true)? {
+        match dispatch_cycle(&repo, &repo_str, &bypassed_beads, true)? {
             DispatchCycle::Empty => {
                 println!("no ready beads in {repo_str}; nothing to dispatch");
                 let rendered = report.render();
@@ -857,9 +870,12 @@ fn cmd_drain(repo: &Path) -> Result<(), String> {
                 )?;
             }
             DispatchCycle::ClaimLost(bead_id) => {
-                lost_claims.insert(bead_id);
+                bypassed_beads.insert(bead_id);
             }
             DispatchCycle::ReworkRouted(_) => {}
+            DispatchCycle::ExistingLaneSkipped(bead_id) => {
+                bypassed_beads.insert(bead_id);
+            }
         }
     }
 }
@@ -1668,19 +1684,48 @@ fn local_lane_branch_exists(repo: &Path, bead_id: &str) -> Result<bool, String> 
     Ok(refs.lines().any(|candidate| candidate == branch))
 }
 
-fn route_selected_rework(repo: &Path, bead: &abacus::ReadyBead) -> Result<bool, String> {
-    if !local_lane_branch_exists(repo, &bead.id)? {
-        return Ok(false);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExistingLaneDispatch {
+    Fresh,
+    Rework,
+    Skip,
+}
+
+fn derive_existing_lane_dispatch(
+    branch_exists: bool,
+    state: Option<LaneState>,
+) -> ExistingLaneDispatch {
+    if !branch_exists {
+        ExistingLaneDispatch::Fresh
+    } else if state == Some(LaneState::ReworkRequested) {
+        ExistingLaneDispatch::Rework
+    } else {
+        ExistingLaneDispatch::Skip
     }
+}
+
+fn report_existing_lane_skip(bead_id: &str) {
+    println!("skipped {bead_id}: existing lane pending review/adjudication");
+}
+
+fn route_selected_existing_lane(
+    repo: &Path,
+    bead: &abacus::ReadyBead,
+) -> Result<ExistingLaneDispatch, String> {
+    let branch_exists = local_lane_branch_exists(repo, &bead.id)?;
+    if derive_existing_lane_dispatch(branch_exists, None) == ExistingLaneDispatch::Fresh {
+        return Ok(ExistingLaneDispatch::Fresh);
+    }
+    let branch = format!("lane/{}", bead.id);
+    let Some(pull_request) = probe_pull_request(repo, &branch)? else {
+        report_existing_lane_skip(&bead.id);
+        return Ok(ExistingLaneDispatch::Skip);
+    };
     let agent_name = sanitize_agent_name(&bead.id);
     let agents = repo_agents(repo)?;
     let agent = agents
         .iter()
         .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
-    let branch = format!("lane/{}", bead.id);
-    let Some(pull_request) = probe_pull_request(repo, &branch)? else {
-        return Ok(false);
-    };
     let outcome = probe_bead_outcome(repo, &bead.id)?;
     let latest_adjudication =
         latest_reviewed_adjudication(&pull_request.review_facts).map(|adjudication| {
@@ -1701,8 +1746,10 @@ fn route_selected_rework(repo: &Path, bead: &abacus::ReadyBead) -> Result<bool, 
         verdict_heading_count: pull_request.review_facts.verdict_cycles.len(),
         latest_adjudication,
     });
-    if state != LaneState::ReworkRequested {
-        return Ok(false);
+    let dispatch = derive_existing_lane_dispatch(branch_exists, Some(state));
+    if dispatch == ExistingLaneDispatch::Skip {
+        report_existing_lane_skip(&bead.id);
+        return Ok(dispatch);
     }
 
     let adjudication = latest_reviewed_adjudication(&pull_request.review_facts)
@@ -1713,26 +1760,28 @@ fn route_selected_rework(repo: &Path, bead: &abacus::ReadyBead) -> Result<bool, 
         "rework routed before fresh dispatch for {} on {}",
         bead.id, lane.branch
     );
-    Ok(true)
+    Ok(ExistingLaneDispatch::Rework)
 }
 
 fn dispatch_cycle(
     repo: &Path,
     repo_str: &str,
-    lost_claims: &BTreeSet<String>,
+    bypassed_beads: &BTreeSet<String>,
     reselect_after_claim_failure: bool,
 ) -> Result<DispatchCycle, String> {
     let ready = capture("br", &["ready", "--json"], Some(repo))?;
     let beads = parse_ready(&ready)?;
     let claimable: Vec<_> = beads
         .into_iter()
-        .filter(|bead| !lost_claims.contains(&bead.id))
+        .filter(|bead| !bypassed_beads.contains(&bead.id))
         .collect();
     let Some(bead) = select_bead(&claimable).cloned() else {
         return Ok(DispatchCycle::Empty);
     };
-    if route_selected_rework(repo, &bead)? {
-        return Ok(DispatchCycle::ReworkRouted(bead.id));
+    match route_selected_existing_lane(repo, &bead)? {
+        ExistingLaneDispatch::Rework => return Ok(DispatchCycle::ReworkRouted(bead.id)),
+        ExistingLaneDispatch::Skip => return Ok(DispatchCycle::ExistingLaneSkipped(bead.id)),
+        ExistingLaneDispatch::Fresh => {}
     }
     let default_branch = discover_default_branch(repo)?;
     if let Err(error) = capture("br", &["update", &bead.id, "--claim"], Some(repo)) {
@@ -2001,6 +2050,35 @@ mod tests {
             parse_advertised_default_branch(output).unwrap(),
             "release/next"
         );
+    }
+
+    #[test]
+    fn existing_lane_dispatch_is_fresh_only_without_branch_evidence() {
+        assert_eq!(
+            derive_existing_lane_dispatch(false, None),
+            ExistingLaneDispatch::Fresh
+        );
+        assert_eq!(
+            derive_existing_lane_dispatch(true, Some(LaneState::ReworkRequested)),
+            ExistingLaneDispatch::Rework
+        );
+        assert_eq!(
+            derive_existing_lane_dispatch(true, None),
+            ExistingLaneDispatch::Skip
+        );
+        for state in [
+            LaneState::Authoring,
+            LaneState::AwaitingReview,
+            LaneState::Merged,
+            LaneState::Blocked,
+            LaneState::Stalled,
+        ] {
+            assert_eq!(
+                derive_existing_lane_dispatch(true, Some(state)),
+                ExistingLaneDispatch::Skip,
+                "branch-backed {state:?} must never fresh-dispatch"
+            );
+        }
     }
 
     #[test]

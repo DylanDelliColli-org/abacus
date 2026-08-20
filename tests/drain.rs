@@ -1014,6 +1014,147 @@ fi
     );
 }
 
+fn run_skips_existing_lane_pending_review(comments: &str, tag: &str) {
+    let existing_bead = "it-run-existing";
+    let fresh_bead = "it-run-fresh";
+    let workspace = TempDir::new(tag);
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let br_calls = workspace.0.join("br-calls");
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let gh_calls = workspace.0.join("gh-calls");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1\" = \"ready\" ]; then\n\
+               printf '[{{\"id\":\"{existing_bead}\",\"title\":\"existing lane\",\"priority\":0,\"labels\":[]}},{{\"id\":\"{fresh_bead}\",\"title\":\"fresh work\",\"priority\":1,\"labels\":[]}}]\\n'\n\
+             elif [ \"$1 $2 $3\" = \"update {existing_bead} --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2 $3\" = \"update {fresh_bead} --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"show {existing_bead}\" ]; then\n\
+               printf '[{{\"status\":\"open\",\"comments\":[]}}]\\n'\n\
+             elif [ \"$1 $2\" = \"show {fresh_bead}\" ]; then\n\
+               printf '[{{\"status\":\"closed\",\"comments\":[]}}]\\n'\n\
+             else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            calls = br_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{existing_bead}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"warm-workspace\",\"pane_id\":\"warm-pane\"}}]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               if printf '%s\\n' \"$*\" | grep -q -- '--branch lane/{existing_bead}'; then\n\
+                 printf 'fatal: lane/{existing_bead} is already checked out\\n' >&2; exit 128\n\
+               fi\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"fresh-workspace\"}},\"root_pane\":{{\"pane_id\":\"fresh-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/{fresh_bead}\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent start\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               printf 'fresh worker settled\\n'\n\
+             elif [ \"$1 $2\" = \"worktree remove\" ]; then\n\
+               exit 0\n\
+             else printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2; fi\n",
+            calls = herdr_calls.display(),
+            root = workspace.0.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            r####"#!/bin/sh
+printf '%s\n' "$*" >> '{calls}'
+if [ "$1 $2 $3" = "pr view lane/{existing_bead}" ]; then
+  printf '%s\n' '{{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":37,"comments":{comments}}}'
+elif [ "$1 $2 $3" = "pr view lane/{fresh_bead}" ]; then
+  printf 'no pull requests found for branch\n' >&2; exit 1
+else
+  printf 'unexpected gh call: %s\n' "$*" >&2; exit 2
+fi
+"####,
+            calls = gh_calls.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"for-each-ref\" ]; then if [ \"$3\" = \"refs/heads/lane/{existing_bead}\" ]; then printf 'lane/{existing_bead}\\n'; fi; elif [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then printf 'origin/main\\n'; else printf 'unexpected git call: %s\\n' \"$*\" >&2; exit 2; fi\n"
+        ),
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_gh, &fake_git] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["run", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!(
+            "skipped {existing_bead}: existing lane pending review/adjudication"
+        )),
+        "run omitted the existing-lane skip report: {stdout}"
+    );
+    let br_calls = std::fs::read_to_string(br_calls).unwrap();
+    assert!(
+        !br_calls.contains(&format!("update {existing_bead} --claim")),
+        "run claimed an existing lane as fresh work:\n{br_calls}"
+    );
+    assert!(
+        br_calls.contains(&format!("update {fresh_bead} --claim")),
+        "run did not advance to the next ready bead:\n{br_calls}"
+    );
+    let herdr_calls = std::fs::read_to_string(herdr_calls).unwrap();
+    let creates: Vec<_> = herdr_calls
+        .lines()
+        .filter(|call| call.starts_with("worktree create"))
+        .collect();
+    assert_eq!(creates.len(), 1, "Herdr calls:\n{herdr_calls}");
+    assert!(
+        creates[0].contains(&format!("--branch lane/{fresh_bead}")),
+        "run created the wrong lane:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn run_skips_branch_backed_bead_with_no_review_and_dispatches_next_ready_bead() {
+    run_skips_existing_lane_pending_review("[]", "run-skip-existing-no-review");
+}
+
+#[test]
+fn run_skips_branch_backed_bead_awaiting_adjudication_and_dispatches_next_ready_bead() {
+    let comments = r####"[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"CONTRIBUTOR"}]"####;
+    run_skips_existing_lane_pending_review(comments, "run-skip-existing-awaiting-adjudication");
+}
+
 fn run_rework_dispatch_sweep(
     tag: &str,
     warm_agent_present: bool,
