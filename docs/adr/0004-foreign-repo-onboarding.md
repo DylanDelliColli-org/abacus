@@ -230,3 +230,17 @@ contract grows repo-specific length (gate table, step-zero) — accepted
 because every line traces to a measured failure mode. Multi-repo
 operation becomes real: one machine, one herdr server, two governed
 stores — the north-star constraint gets its first genuine test.
+
+Structural, discovered post-rename (2026-08-19): **D2's mixed-prefix
+precedent is withdrawn.** The nine legacy `abacus-*` ids this ADR cited
+as precedent were renamed to `ab-*` (PR 33, bead `ab-bar`) because br's
+fresh-clone import validation rejects a mixed-prefix store — `br show`
+fails on any rebuild from the JSONL with "expected prefix 'ab', found
+issue 'abacus-5pe'". A store must be single-prefix to survive a fresh
+clone, so D2's keep-original-ids import gives the market-brief store the
+same fresh-clone breakage; its resolution (rename migration or br-side
+tolerance) is a resident-session decision. Execution warning for any
+such migration, measured here the same day: the `merge-jsonl` union
+driver and br's DB auto-import are both rename/delete-unaware (see
+AGENTS.md, Tracker merge driver) — a rename migration needs a store
+rebuild on every live checkout, not just a clean merge.

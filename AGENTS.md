@@ -19,10 +19,11 @@ the authority.
 - **Work state lives in `br`.** There is no other tracker and no TODO lists.
   This store mints **`ab-*`** ids. The parts bin `../abacus-v1` has its own
   `br` store minting `abacus-*`, and the two namespaces must stay disjoint —
-  a bare id has to name exactly one bead. The nine `abacus-*` ids already in
-  this store predate the split; they were checked against all 103 in v1 and
-  collide with none, so they stay as they are. Never point this repo's `br`
-  at v1's store, or the reverse.
+  a bare id has to name exactly one bead. A store must also be
+  single-prefix: br's fresh-clone import validation rejects mixed prefixes,
+  which is why the nine legacy `abacus-*` ids that predated the split were
+  renamed to `ab-*` on 2026-08-19 (PR 33). Never point this repo's `br` at
+  v1's store, or the reverse.
 
 ## Working a bead
 
@@ -50,6 +51,16 @@ The driver unions issue IDs from all three snapshots and keeps the complete
 line with the latest `updated_at`. If any line cannot be parsed, the driver
 exits non-zero so Git leaves a normal conflict for manual resolution.
 
+**The union is add/edit-safe only.** Rows deleted or renamed on either side
+are resurrected (executed 2026-08-19: merging the nine-id rename against
+diverged main yielded 92 rows with every old id back, exit 0, invalid
+store), and br's DB auto-import is deletion-unaware the same way (the live
+DB kept old rows and missed renamed ones until `br sync --flush-only`
+refused: 89 vs 83). Any rename/delete migration therefore needs a store
+rebuild on EVERY live checkout, not just a clean merge. Proven recovery:
+back up the `.beads` db sidecars, rebuild fresh from the committed JSONL,
+re-apply any DB-only delta.
+
 ## Shared work-state wrapper
 
 `bin/br-shim` binds `br` commands run in linked worktrees to the main
@@ -69,12 +80,14 @@ BEADS_DIR=<main-checkout>/.beads br <arguments>
 Do not rely on an exported `BEADS_DIR`: worker shell invocations do not share
 environment changes.
 
-Four `br doctor` WARNs on this store are known-benign — do not jot them, only
+Five `br doctor` WARNs on this store are known-benign — do not jot them, only
 new findings: `br_path_dupes` (the shim above is deliberate),
 `db.recovery_artifacts` (doctor's own aged check governs escalation),
 `base_jsonl` stale merge anchor (the next `br sync --flush-only` refreshes
-it), and `dep.dead_closed_blocking_edges` (satisfied-history edges; nothing
-is blocked).
+it), `dep.dead_closed_blocking_edges` (satisfied-history edges; nothing is
+blocked), and `dep.fully_unblocked_open` (fires on claimed or reopened beads
+mid-flight — all blockers closed but assigned, so not surfaced by `br
+ready`; benign while the flagged bead is actively being worked).
 
 ## Lanes
 
