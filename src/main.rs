@@ -20,15 +20,15 @@ use abacus::land::{
 #[cfg(test)]
 use abacus::lane::retry_probe_once;
 use abacus::lane::{
-    LaneState, LaneStateInputs, MorningReport, PullRequestProbe, PullRequestState, capture,
-    derive_lane_state, lane_open, lane_open_existing_worktree, lane_prompt, lane_prompt_rework,
-    lane_reap, lane_reap_for_state, lane_recover, lane_settle, lane_start_agent,
-    probe_bead_outcome,
+    LaneState, LaneStateInputs, MorningReport, PromptOutcome, PullRequestProbe, PullRequestState,
+    capture, derive_lane_state, lane_open, lane_open_existing_worktree, lane_prompt,
+    lane_prompt_rework, lane_reap, lane_reap_for_state, lane_recover, lane_settle,
+    lane_start_agent, probe_bead_outcome, prompt_agent,
 };
 use abacus::review::{
     Adjudication, AdjudicationVerdict, BLOCKED_COMMENT_TOKEN, CommitStatusState,
-    PostedReviewStatus, ReviewComment, ReviewCommentFacts, commit_status_request, launch_reviewer,
-    parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
+    PostedReviewStatus, ReviewComment, ReviewCommentFacts, ReviewerLaunch, commit_status_request,
+    launch_reviewer, parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
 };
 use abacus::{
     format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
@@ -325,6 +325,15 @@ fn resolution_prompt(candidate: &Candidate, default_branch: &str, reason: &str) 
     )
 }
 
+fn require_prompt_engaged(outcome: PromptOutcome, role: &str) -> Result<(), String> {
+    match outcome {
+        PromptOutcome::Settled(_) => Ok(()),
+        PromptOutcome::NeverEngaged { error } => {
+            Err(format!("{role} never engaged after Enter nudge: {error}"))
+        }
+    }
+}
+
 fn dispatch_resolution(
     repo: &Path,
     candidate: &Candidate,
@@ -363,12 +372,15 @@ fn dispatch_resolution(
         None,
     )?;
     let prompt = resolution_prompt(candidate, default_branch, reason);
-    capture(
-        "herdr",
-        &["agent", "prompt", &agent_name, &prompt, "--wait"],
-        None,
-    )?;
-    Ok(())
+    require_prompt_engaged(
+        prompt_agent(
+            &agent_name,
+            &lane.pane_id,
+            &prompt,
+            "land resolution startup",
+        )?,
+        "land resolution agent",
+    )
 }
 
 fn resolve_once<Delay>(
@@ -802,7 +814,15 @@ fn cmd_run(repo: &Path) -> Result<i32, String> {
                             "ReworkRequested lane is missing its reviewed adjudication".to_owned()
                         })?;
                     let agent_name = sanitize_agent_name(&settled.bead_id);
-                    lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?;
+                    require_prompt_engaged(
+                        lane_prompt_rework(
+                            &settled.bead_id,
+                            &settled.lane,
+                            &agent_name,
+                            adjudication,
+                        )?,
+                        "rework agent",
+                    )?;
                     Ok(0)
                 }
                 Some(state @ LaneState::Authoring) => {
@@ -1373,7 +1393,10 @@ fn record_drain_settle(
                 "ReworkRequested lane is missing its reviewed adjudication".to_owned()
             })?;
         let agent_name = sanitize_agent_name(&settled.bead_id);
-        lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?;
+        require_prompt_engaged(
+            lane_prompt_rework(&settled.bead_id, &settled.lane, &agent_name, adjudication)?,
+            "rework agent",
+        )?;
     }
     match state {
         LaneState::Blocked | LaneState::Merged => {
@@ -1407,21 +1430,33 @@ fn launch_awaiting_reviewer(
     settled: &SettledLane,
     pr_number: Option<u64>,
     cycle: u32,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let bead_json = capture("br", &["show", &settled.bead_id, "--json"], Some(repo))?;
     let review_bead = parse_review_bead(&bead_json)?;
     let pr_number = match pr_number {
         Some(number) => number,
         None => probe_pull_request_number(repo, &settled.lane.branch)?,
     };
-    let brief = launch_reviewer(repo, &settled.bead_id, &review_bead, pr_number, cycle)?;
-    println!(
-        "adversarial reviewer launched for {} cycle {} with brief {}",
-        settled.bead_id,
-        cycle,
-        brief.display()
-    );
-    Ok(())
+    match launch_reviewer(repo, &settled.bead_id, &review_bead, pr_number, cycle)? {
+        ReviewerLaunch::Engaged(brief) => {
+            println!(
+                "adversarial reviewer launched for {} cycle {} with brief {}",
+                settled.bead_id,
+                cycle,
+                brief.display()
+            );
+            Ok(true)
+        }
+        ReviewerLaunch::NeverEngaged(brief) => {
+            eprintln!(
+                "adversarial reviewer never engaged for {} cycle {}; reaped failed workspace; brief {}",
+                settled.bead_id,
+                cycle,
+                brief.display()
+            );
+            Ok(false)
+        }
+    }
 }
 
 fn post_commit_status(repo: &Path, head_sha: &str, state: CommitStatusState) -> Result<(), String> {
@@ -1553,17 +1588,35 @@ fn reconcile_review_lifecycle(
     if pull_request.review_facts.verdict_cycles.contains(&cycle) {
         return Ok(());
     }
-    let live_reviewer_name = reviewer_name(&settled.bead_id, cycle);
-    if agents
+    let reviewer_name = reviewer_name(&settled.bead_id, cycle);
+    let reviewer = agents
         .iter()
-        .any(|agent| agent.name.as_deref() == Some(live_reviewer_name.as_str()))
-    {
+        .find(|agent| agent.name.as_deref() == Some(reviewer_name.as_str()));
+    let launch_key = (settled.bead_id.clone(), cycle);
+    if let Some(reviewer) = reviewer {
+        if reviewer.agent_status == "working" {
+            return Ok(());
+        }
+        capture(
+            "herdr",
+            &["workspace", "close", &reviewer.workspace_id],
+            None,
+        )?;
+        launched_reviewers.remove(&launch_key);
+        println!(
+            "settled zero-effect reviewer reaped for {} cycle {}: workspace {}",
+            settled.bead_id, cycle, reviewer.workspace_id
+        );
+    } else if launched_reviewers.contains(&launch_key) {
         return Ok(());
     }
-    if !launched_reviewers.insert((settled.bead_id.clone(), cycle)) {
-        return Ok(());
+
+    if launch_awaiting_reviewer(repo, settled, pull_request.number, cycle)? {
+        launched_reviewers.insert(launch_key);
+    } else {
+        launched_reviewers.remove(&launch_key);
     }
-    launch_awaiting_reviewer(repo, settled, pull_request.number, cycle)
+    Ok(())
 }
 
 /// Derive the shared lane state for a settled worker. A completed bead with no
@@ -1755,7 +1808,10 @@ fn route_selected_existing_lane(
     let adjudication = latest_reviewed_adjudication(&pull_request.review_facts)
         .ok_or_else(|| "ReworkRequested lane is missing its reviewed adjudication".to_owned())?;
     let lane = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent)?;
-    lane_prompt_rework(&bead.id, &lane, &agent_name, adjudication)?;
+    require_prompt_engaged(
+        lane_prompt_rework(&bead.id, &lane, &agent_name, adjudication)?,
+        "rework agent",
+    )?;
     println!(
         "rework routed before fresh dispatch for {} on {}",
         bead.id, lane.branch
@@ -1800,8 +1856,10 @@ fn dispatch_cycle(
     let lane_started = Instant::now();
     let lane_result = (|| -> Result<(abacus::Lane, abacus::BeadOutcome), String> {
         let lane = lane_open(repo_str, &bead, &agent_name)?;
-        lane_prompt(&bead, &lane, &default_branch, &agent_name)?;
-        let outcome = lane_settle(repo, &bead)?;
+        let outcome = match lane_prompt(&bead, &lane, &default_branch, &agent_name)? {
+            PromptOutcome::Settled(_) => lane_settle(repo, &bead)?,
+            PromptOutcome::NeverEngaged { .. } => abacus::BeadOutcome::NeverEngaged,
+        };
         Ok((lane, outcome))
     })();
 

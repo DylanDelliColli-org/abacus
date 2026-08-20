@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::lane::{capture, prompt_agent};
+use crate::lane::{PromptOutcome, capture, prompt_agent};
 use crate::sanitize_agent_name;
 
 pub const BLOCKED_COMMENT_TOKEN: &str = "BLOCKED";
@@ -442,16 +442,38 @@ pub fn refutation_brief(input: &RefutationBriefInput<'_>) -> String {
     )
 }
 
-fn parse_workspace_pane(json: &str) -> Result<String, String> {
+struct ReviewerWorkspace {
+    workspace_id: String,
+    pane_id: String,
+}
+
+fn parse_reviewer_workspace(json: &str) -> Result<ReviewerWorkspace, String> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|error| format!("unparseable herdr workspace output: {error}"))?;
-    value["result"]["root_pane"]["pane_id"]
+    let pane_id = value["result"]["root_pane"]["pane_id"]
         .as_str()
         .filter(|pane| !pane.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| {
             format!("missing result.root_pane.pane_id in herdr workspace output: {json}")
-        })
+        })?;
+    let workspace_id = value["result"]["workspace"]["workspace_id"]
+        .as_str()
+        .filter(|workspace| !workspace.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            format!("missing result.workspace.workspace_id in herdr workspace output: {json}")
+        })?;
+    Ok(ReviewerWorkspace {
+        workspace_id,
+        pane_id,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewerLaunch {
+    Engaged(PathBuf),
+    NeverEngaged(PathBuf),
 }
 
 pub fn launch_reviewer(
@@ -460,7 +482,7 @@ pub fn launch_reviewer(
     review_bead: &ReviewBead,
     pr_number: u64,
     cycle: u32,
-) -> Result<PathBuf, String> {
+) -> Result<ReviewerLaunch, String> {
     let agents_path = repo.join("AGENTS.md");
     let path = brief_path(repo, bead_id, cycle);
     let parent = path
@@ -498,7 +520,7 @@ pub fn launch_reviewer(
         ],
         None,
     )?;
-    let pane_id = parse_workspace_pane(&opened)?;
+    let workspace = parse_reviewer_workspace(&opened)?;
     capture(
         "herdr",
         &[
@@ -508,14 +530,28 @@ pub fn launch_reviewer(
             "--kind",
             "codex",
             "--pane",
-            &pane_id,
+            &workspace.pane_id,
         ],
         None,
     )?;
 
     let path_arg = path.to_string_lossy().into_owned();
-    prompt_agent(&agent_name, &pane_id, &path_arg, "reviewer startup")?;
-    Ok(path)
+    match prompt_agent(
+        &agent_name,
+        &workspace.pane_id,
+        &path_arg,
+        "reviewer startup",
+    )? {
+        PromptOutcome::Settled(_) => Ok(ReviewerLaunch::Engaged(path)),
+        PromptOutcome::NeverEngaged { .. } => {
+            capture(
+                "herdr",
+                &["workspace", "close", &workspace.workspace_id],
+                None,
+            )?;
+            Ok(ReviewerLaunch::NeverEngaged(path))
+        }
+    }
 }
 
 #[cfg(test)]

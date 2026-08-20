@@ -1656,13 +1656,14 @@ fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
 }
 
 #[test]
-fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
+fn sweep_reaps_a_settled_zero_effect_reviewer_and_launches_its_replacement() {
     let bead_id = "it-review";
     let workspace = TempDir::new("drain-review-launch");
     let fake_bin = workspace.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
     std::fs::write(workspace.0.join("AGENTS.md"), "review fixture authority\n").unwrap();
     let herdr_calls = workspace.0.join("herdr-calls");
+    let replacement_started = workspace.0.join("replacement-started");
 
     let fake_br = fake_bin.join("br");
     std::fs::write(
@@ -1692,8 +1693,15 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\n\
              if [ \"$1 $2\" = \"agent list\" ]; then\n\
-               printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{bead_id}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"author-workspace\",\"pane_id\":\"author-pane\"}}]}}}}'\n\
+               if [ -f '{replacement_started}' ]; then\n\
+                 printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{bead_id}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"author-workspace\",\"pane_id\":\"author-pane\"}},{{\"name\":\"rev-it-review-c1\",\"agent_status\":\"working\",\"cwd\":\"{root}\",\"workspace_id\":\"review-workspace\",\"pane_id\":\"review-pane\"}}]}}}}'\n\
+               else\n\
+                 printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{bead_id}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"author-workspace\",\"pane_id\":\"author-pane\"}},{{\"name\":\"rev-it-review-c1\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"stalled-review-workspace\",\"pane_id\":\"stalled-review-pane\"}}]}}}}'\n\
+               fi\n\
+             elif [ \"$1 $2 $3\" = \"workspace close stalled-review-workspace\" ]; then\n\
+               exit 0\n\
              elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
+               : > '{replacement_started}'\n\
                printf '%s\\n' '{{\"result\":{{\"type\":\"workspace_created\",\"workspace\":{{\"workspace_id\":\"review-workspace\"}},\"root_pane\":{{\"pane_id\":\"review-pane\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"agent start\" ]; then\n\
                exit 0\n\
@@ -1712,6 +1720,7 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
             calls = herdr_calls.display(),
             bead_id = bead_id,
             root = workspace.0.display(),
+            replacement_started = replacement_started.display(),
         ),
     )
     .unwrap();
@@ -1754,6 +1763,14 @@ fn sweep_launches_one_ephemeral_reviewer_for_a_newly_awaiting_review_lane() {
         .filter(|call| call.starts_with("workspace create"))
         .collect();
     assert_eq!(workspace_creates.len(), 1, "Herdr calls:\n{calls}");
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call == &"workspace close stalled-review-workspace")
+            .count(),
+        1,
+        "the settled same-cycle reviewer must be reaped before replacement:\n{calls}"
+    );
     assert!(
         workspace_creates[0].contains(&format!("--cwd {}", workspace.0.display()))
             && workspace_creates[0].contains("--no-focus"),

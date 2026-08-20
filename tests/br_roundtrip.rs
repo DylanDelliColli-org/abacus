@@ -1720,7 +1720,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
 
 #[cfg(unix)]
 #[test]
-fn abacus_run_nudges_once_when_a_successful_prompt_remains_unsubmitted() {
+fn abacus_run_classifies_a_failed_enter_nudge_as_never_engaged() {
     require_br!();
     let ws = TempWorkspace::new("never-engaged-retry-recovers");
     br(&ws.0, &["init", "--prefix", "it"]);
@@ -1760,15 +1760,17 @@ fn abacus_run_nudges_once_when_a_successful_prompt_remains_unsubmitted() {
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
                printf '› [Pasted Content 1004 chars]\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
              elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
-               cd '{}'\n\
-               br close '{}'\n\
+               exit 0\n\
              elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
-               printf 'agent reached %s\\n' \"$5\"\n\
+               if [ \"$5\" = \"working\" ]; then\n\
+                 printf 'nudge produced no worker transition\\n' >&2\n\
+                 exit 9\n\
+               fi\n\
+               printf 'unexpected settled wait after failed nudge\\n' >&2\n\
+               exit 10\n\
              fi\n",
             herdr_calls.display(),
             lane_json,
-            ws.0.display(),
-            bead.id,
         ),
     )
     .unwrap();
@@ -1786,10 +1788,20 @@ fn abacus_run_nudges_once_when_a_successful_prompt_remains_unsubmitted() {
         .output()
         .unwrap();
 
-    assert!(
-        out.status.success(),
+    assert_eq!(
+        out.status.code(),
+        Some(3),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("worker never engaged"),
+        "the failed recovery was not truthfully classified:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("worker settled before completing"),
+        "the engine-owned claim was mistaken for worker engagement:\n{stderr}"
     );
     let calls = std::fs::read_to_string(herdr_calls).unwrap();
     assert_eq!(
@@ -1815,16 +1827,18 @@ fn abacus_run_nudges_once_when_a_successful_prompt_remains_unsubmitted() {
         )),
         "the recovery did not observe the nudged turn start:\n{calls}"
     );
-    assert!(
-        calls.contains(&format!(
-            "agent wait {} --until done --until blocked",
-            bead.id
-        )),
-        "the recovery did not wait for the nudged turn to settle:\n{calls}"
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.contains("--until done --until blocked"))
+            .count(),
+        0,
+        "a failed working transition must not enter the settled wait:\n{calls}"
     );
     assert_eq!(
         parse_bead_outcome(&br(&ws.0, &["show", &bead.id, "--json"])).unwrap(),
-        BeadOutcome::Completed
+        BeadOutcome::Incomplete,
+        "the truthful NeverEngaged classification must not depend on tracker status"
     );
 }
 

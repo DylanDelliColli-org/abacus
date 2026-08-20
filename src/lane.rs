@@ -286,6 +286,12 @@ fn has_unsubmitted_codex_prompt(pane: &str) -> bool {
     pasted_composer && untouched_context
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptOutcome {
+    Settled(String),
+    NeverEngaged { error: String },
+}
+
 /// Prompt an agent through the shared startup-race seam.
 ///
 /// Herdr can report a successful settled prompt while a fresh Codex TUI still
@@ -298,7 +304,7 @@ pub fn prompt_agent(
     pane_id: &str,
     prompt: &str,
     stall_context: &str,
-) -> Result<String, String> {
+) -> Result<PromptOutcome, String> {
     let prompt_args = ["agent", "prompt", agent_name, prompt, "--wait"];
     let settled = match capture("herdr", &prompt_args, None) {
         Ok(settled) => settled,
@@ -311,7 +317,7 @@ pub fn prompt_agent(
 
     let pane = capture("herdr", &["pane", "read", pane_id, "--lines", "40"], None)?;
     if !has_unsubmitted_codex_prompt(&pane) {
-        return Ok(settled);
+        return Ok(PromptOutcome::Settled(settled));
     }
 
     eprintln!("agent prompt remained pasted after settle; nudging Enter once");
@@ -330,7 +336,7 @@ pub fn prompt_agent(
         None,
     ) {
         eprintln!("Enter nudge produced no observed worker turn: {error}");
-        return Ok(settled);
+        return Ok(PromptOutcome::NeverEngaged { error });
     }
     capture(
         "herdr",
@@ -339,6 +345,7 @@ pub fn prompt_agent(
         ],
         None,
     )
+    .map(PromptOutcome::Settled)
 }
 
 /// Dispatch the initial worker prompt, retrying the observed startup race once.
@@ -347,7 +354,7 @@ pub fn lane_prompt(
     lane: &Lane,
     default_branch: &str,
     agent_name: &str,
-) -> Result<(), String> {
+) -> Result<PromptOutcome, String> {
     let rust_version = target_rust_version(Path::new(&lane.checkout_path))?;
     let prompt = dispatch_prompt(
         &bead.id,
@@ -358,9 +365,11 @@ pub fn lane_prompt(
     println!(
         "dispatched; waiting for the lane to settle (Ctrl-C detaches, the lane keeps running)"
     );
-    let settled = prompt_agent(agent_name, &lane.pane_id, &prompt, "worker startup")?;
-    println!("{}", settled.trim_end());
-    Ok(())
+    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "worker startup")?;
+    if let PromptOutcome::Settled(settled) = &outcome {
+        println!("{}", settled.trim_end());
+    }
+    Ok(outcome)
 }
 
 pub fn rework_prompt(bead_id: &str, branch: &str, adjudication: &Adjudication) -> String {
@@ -393,11 +402,13 @@ pub fn lane_prompt_rework(
     lane: &Lane,
     agent_name: &str,
     adjudication: &Adjudication,
-) -> Result<(), String> {
+) -> Result<PromptOutcome, String> {
     let prompt = rework_prompt(bead_id, &lane.branch, adjudication);
-    let settled = prompt_agent(agent_name, &lane.pane_id, &prompt, "recovered startup")?;
-    println!("{}", settled.trim_end());
-    Ok(())
+    let outcome = prompt_agent(agent_name, &lane.pane_id, &prompt, "recovered startup")?;
+    if let PromptOutcome::Settled(settled) = &outcome {
+        println!("{}", settled.trim_end());
+    }
+    Ok(outcome)
 }
 
 /// Probe the worker outcome after the shared prompt seam has completed its
