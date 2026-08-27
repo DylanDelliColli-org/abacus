@@ -6,8 +6,15 @@ lifecycle: active
 # ADR 0006: The PR evaluator stack — two evaluators, one gate, manual-mode fallback
 
 - **Status:** **proposed** 2026-08-27 — drafted at the `ab-ljn` RECORD
-  gate; pending the design-document review gate (bloat review + spec
-  validation) and operator disposition.
+  gate. Review trail: bloat review (fresh Codex context, one pass, five
+  cuts, operator-disposed same day — three applied as shrinks, two
+  rejected with reasons in the planning record) and spec validation
+  (second fresh Codex context, five findings, all applied as
+  faithfulness/wording fixes same day). **This ADR records target state:**
+  the skill rewrite, the simplicity template, and the D3 pinning test are
+  implemented by the `ab-ljn` epic's beads; until they land, the current
+  skill's engine-mode rules stand and manual mode has no authorized
+  written procedure.
 - **Date:** 2026-08-27
 - **Deciders:** operator (all rulings), orchestrator session (record),
   with a Codex peer session as design counterparty (two-round evaluator
@@ -57,9 +64,12 @@ cycle unconditionally — an evaluator needing a launch predicate is out of
 scope. Anything answerable from a plan or scope, or already covered by CI
 or an existing evaluator, is not a PR evaluator.
 
-**D2 — Exactly one gating evaluator.** Correctness owns the
-`adversarial-review` commit status and merge authority; simplicity owns no
-status and can never block a merge. A second gate would duplicate severity
+**D2 — Exactly one gating evaluator.** Correctness is the sole evaluator
+whose review the `adversarial-review` commit status and the merge gate act
+on; the gate machinery itself is unchanged from ADR 0005 — the engine
+posts the status, an authorized human adjudication flips it, and merge
+authority stays at the ADR 0005 / north-star boundary. Simplicity
+participates in no status and can never block a merge. A second gate would duplicate severity
 decisions and deepen review arcs, and requires a genuinely separate
 authority boundary plus a fresh operator ruling (extending ADR 0005's
 cut-1 fence on check-flip authority). Advisory capacity is bounded by
@@ -74,9 +84,11 @@ heading parser prefix-matches and ignores trailing text; a colliding
 heading registers a phantom verdict cycle that can kill a live correctness
 reviewer, suppress its relaunch, and — if the phantom cycle is then
 adjudicated — flip the required status and clear a PR to merge with zero
-correctness review performed. A unit test in `src/review.rs` pins the
-canonical simplicity heading as invisible to cycle bookkeeping; changing
-either heading requires revisiting that test and this decision together.
+correctness review performed. A unit test in `src/review.rs` pinning the
+canonical simplicity heading as invisible to cycle bookkeeping is
+specified in the epic's test strategy and lands with the implementation;
+once landed, changing either heading requires revisiting that test and
+this decision together.
 
 **D4 — Adjudication binds the stack.** One adjudication comment per
 correctness cycle, in ADR 0005 D4's byte-exact grammar, unchanged
@@ -88,9 +100,9 @@ D2. Adjudication is a **transaction**: it states the reviewed head, the
 surfaces examined, material exclusions, and a completeness judgement; and
 every accepted concern receives its durable disposition in the same
 operation — folded into the current rework, filed as a bead whose ID
-appears in the adjudication, or explicitly rejected. An acceptance whose
-filing is deferred is the documented mechanism by which concerns resurface
-as later-cycle blockers.
+appears in the adjudication, or explicitly rejected. Deferred filing is
+forbidden: it is the documented mechanism by which accepted concerns
+resurfaced as later-cycle blockers.
 
 **D5 — Two modes, one contract; manual mode is a permanent fallback.**
 *Engine mode* is the destination: the engine launches, tracks, and reaps
@@ -152,9 +164,11 @@ execution layer, but its origin (bead spec versus worker behaviour) is
 unestablished and a dedicated evaluator is the most expensive recurring
 instrument for it. The narrow test clause (D7) carries the mandate now. A
 shadow trial — a one-off, non-stack test specialist inspecting 5-8
-representative historical diffs against the instructed simplicity
-reviewer's output, with each observed excess classified spec-originated or
-worker-originated — decides promotion. Threshold: two independent PRs
+representative historical diffs, **including known-bloated ones**, against
+the instructed simplicity reviewer's output, with each observed excess
+classified spec-originated or worker-originated, and with the trial also
+watching whether the test clause crowds out simplicity's production-shape
+findings — decides promotion. Threshold: two independent PRs
 where the shadow finds material test defects the instructed simplicity
 reviewer missed, especially same-class misses. If bloat instead traces to
 bead specs or author contracts, those are fixed and no evaluator is
