@@ -1112,12 +1112,23 @@ check: `.1`'s only negative grep (filter-trigger words) is scoped to the
 template and new skill sections, not to test literals — no acceptance
 clause orders a repo-wide removal.
 
-**Freshness review:** victor-type subagent dispatched against the three
-beads at HEAD, planning-record excluded, verdict recorded below when it
-returns.
+**Freshness verdict (victor-type subagent, planning record excluded from
+its reading): all three PASS.** No wrong paths, no drifted line numbers,
+no missing-context defects. Highlights: every cited symbol exact at HEAD
+(`heading_cycle` spans exactly 97-101; the em dash confirmed U+2014); the
+behavioural claims verified against the implementation (`Some(3)` for the
+colliding heading, `None` for the canonical one, `vec![N]` preserved);
+verification commands run green (lib tests 17 pass, full suite 171 pass
+at ~8.7s, drain 30/30); `ab-xuz`'s comment literally names "amendment
+10", so hazard B's pointer resolves; the planning-record recovery anchors
+verified in git history. Two minor notes, both applied: §6 added to
+`.1`'s unchanged-sections list, and the `08b3f00` anchor added to `.3`'s
+crowding-baseline pointer. One observation stands as-is by the bead's own
+design: `agent_pane_busy` is a field-measured token not verifiable
+read-only.
 
-*DECOMPOSITION drafted; awaiting the freshness verdict, then the final
-operator approval and handoff.*
+*DECOMPOSITION complete. Awaiting the final operator approval; handoff
+(delete this file, push) follows it.*
 
 ---
 
