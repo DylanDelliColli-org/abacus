@@ -277,5 +277,211 @@ authors, same conclusion. This is the evidence behind OQ-5.
   expression, usefulness, and enforcement. Under the expanded scope these
   are also **candidate stack members**, not just reference material.
 
-*Status: FRAMING rewritten for the expanded scope, awaiting re-gate.
-RESEARCH in flight against the original brief plus two extensions.*
+---
+
+## RESEARCH
+
+Produced by a sherlock-type subagent, 2026-08-27, audited at `c75729e`. No
+beads written, no source edited. Two incidental defects captured to `jot`.
+Three seam questions (the config/model seam, per-reviewer gating in the
+status code, and stack membership) arrived after the audit was largely
+complete and are outstanding; they are ARCHITECTURE-shaped and do not block
+this gate.
+
+### FRAMING verdict: survives, with one correction
+
+Nothing in FRAMING is invalidated. One operator decision is not achievable
+as written, and one blast-radius omission was found.
+
+**Operator decision 4 — "every reviewer runs every cycle, in parallel" — is
+not achievable on the current launch path.** This is proven from code, not
+inferred. `launch_reviewer` (`src/review.rs:557-562`) calls `prompt_agent`
+(`src/lane.rs:361`) which calls `capture` (`src/lane.rs:643-660`) which runs
+`Command::output()` — blocking until the child exits. With
+`herdr agent prompt --wait`, herdr holds until the agent's turn ends, so
+`launch_awaiting_reviewer` returns only after the review is *finished and
+its verdict already posted*. Two launches placed in sequence cost
+`t1 + t2`, not `max(t1, t2)`.
+
+ADR 0005 D2 (`docs/adr/0005-lane-lifecycle-v2.md:104-114`) states this as
+design: "At most one worker turn is active at any moment (the engine blocks
+on `prompt --wait`); concurrency exists only as settled lanes awaiting
+adjudication." Two live reviewer turns is not covered by that carve-out.
+**Genuine parallelism is a D2 amendment, not merely a code change.**
+
+**Blast-radius omission: `src/lane.rs`.** FRAMING did not name it. The
+non-blocking launch seam lives at `src/lane.rs:340-456`, and it is the
+epic's highest-risk module — `prompt_agent`'s zero-effect-settle recovery
+(baseline context sample → prompt → post-settle sample → conditional Enter
+nudge → wait-working → wait-done) is sequential by construction and cannot
+be interleaved without restructuring. RESEARCH rated its own confidence
+MEDIUM here, the only module below HIGH.
+
+### S1 — the critical isolation failure, and it is reachable
+
+`heading_cycle` (`src/review.rs:97-101`) does `strip_prefix` then
+`take_while(is_ascii_digit)`. **It is a prefix match and ignores trailing
+text**, so `## Adversarial review — cycle 3 — tech debt` parses as cycle 3.
+Any tech-debt heading beginning with the correctness prefix registers a
+phantom cycle. Then, within one `reconcile_review_lifecycle` call, in
+execution order:
+
+1. `reap_reviewers_with_verdicts` (`src/main.rs:1678-1696`) closes
+   `rev-<bead>-c<n>`'s workspace **with no `agent_status` guard** — unlike
+   its sibling at `src/main.rs:1737`. A correctness reviewer mid-review is
+   killed.
+2. `src/main.rs:1728-1730` then sees that cycle already in `verdict_cycles`
+   and returns early. **It never relaunches.**
+
+How it presents: the lane sits `awaiting-review`, status pending, no
+reviewer alive, no verdict ever posted, and every subsequent drain exits 0
+printing `awaiting-review: 1`. `.claude/skills/abacus-execute/SKILL.md:65`
+tells the orchestrator that `AwaitingReview` means a verdict is *owed*, not
+that anything stalled — **the documentation steers away from the correct
+diagnosis.**
+
+Worse, the same root reaches the merge gate. With cycle N now "reviewed",
+`latest_reviewed_adjudication` (`src/main.rs:1625-1630`) accepts an
+adjudication for N. An operator adjudicating the tech-debt report — which
+`SKILL.md:46` actively invites — flips `adversarial-review` to `success` at
+`src/main.rs:1655-1666` and, on a repo where that check is required,
+**clears a PR to merge with zero correctness review performed.** This is
+exactly the outcome FRAMING named as the worst possible, and it is two
+ordinary steps away.
+
+Mitigation is trivial but must be a **hard constraint, not a convention**:
+no other reviewer's heading may begin with `## Adversarial review — cycle `.
+
+**S2, conditional on `ab-cye`:** if `ab-cye` resolves toward a tolerant
+scan, a tech-debt report that merely *quotes* the correctness heading
+triggers the whole S1 chain. This RESEARCH must feed `ab-cye` — whatever
+tolerance it adopts must be line-anchored, and reports must be forbidden
+from quoting the heading.
+
+**S4, HIGH:** both reapers match only `reviewer_name(bead_id, cycle)`
+(`src/main.rs:1684`, `:1731`). An agent under any other name is invisible to
+both, so **tech-debt workspaces are never reaped.** At the 22-cycle depth
+recorded in `ab-xuz`, that is 22 orphan workspaces on one PR. A second
+reaper is mandatory.
+
+**S8, pre-existing and doubled:** `cmd_run` (`src/main.rs:751`) and
+`cmd_drain`'s settle arm (`src/main.rs:887`) pass an *empty* agent slice
+into `reconcile_review_lifecycle`, so every liveness lookup and reap on
+those paths is already a no-op. Only `sweep_live_lanes` supplies real
+agents. The dispatch path can already launch a reviewer whose predecessor
+still runs; a second reviewer doubles the exposure.
+
+### OQ-3 is answered on the engine side
+
+**The engine never reads a verdict body.** `VERDICT_REFUTED`,
+`VERDICT_NOT_REFUTED`, and `PROBES_HEADING` (`src/review.rs:17-19`) appear
+only in brief-template substitution at `src/review.rs:438-440`; a grep
+across `src/main.rs`, `src/lane.rs`, `src/lib.rs`, and `src/land.rs` returns
+zero non-test reads. Reusing the REFUTED / NOT REFUTED vocabulary in an
+advisory report is therefore **engine-inert**. The entire isolation risk
+lives in the *heading* and in operator confusion — not in the verdict line.
+
+### Prior art: this repo already runs a two-reviewer stack
+
+**Every ADR in this repository was reviewed by two independent
+fresh-context reviewers with different mandates** — a *bloat review* (cut
+unnecessary scope) and a *spec validation* (faithfulness), with operator
+dispositions recorded per finding. Trail at
+`docs/adr/0001-planning-flow.md:9-15` and `:232-239`,
+`0002:9-10`, `0003:9-14`, `0004:11`, `0005:12-35`. Live artifacts remain at
+`PLANNING-adr4-bloat-review.md`, `PLANNING-adr4-cut-positions.md`,
+`PLANNING-adr4-spec-review.md`.
+
+This is the repo's own proven idiom for exactly the shape this epic
+proposes, in a different domain. **Directly usable for ARCHITECTURE:** the
+bloat review's per-cut output form — each cut carrying a **"Cost of
+cutting"** and a **"Revive when"** clause (recoverable at
+`git show b256cb8^:PLANNING-adr5-bloat-review.md`) — is a field-proven,
+operator-disposable shape for TD-2 and TD-5 findings, and it is native
+rather than imported.
+
+Also native: `AGENTS.md:112-115` already requires read-only review
+dispatches to state that the review is not bead-tracked work — "no beads,
+no branches, no commits" — because "a reviewer that follows the prime
+directive without this line leaves tracker and remote exhaust." **TD-4 is an
+extension of an existing field-proven rule, not a new invention.**
+
+**No rule forbids this epic.** There is no "exactly one reviewer" clause in
+any ADR, doc, bead, or commit. The nearest fence is ADR 0005's bloat-review
+cut-1 disposition (`:12-21`), noting that moving check-flip authority to an
+agent reviewer would need a fresh operator ruling — which the advisory-only
+decision sidesteps entirely.
+
+**Explicit negative:** no line-count or diff-size discipline exists anywhere
+in the repo — no `AGENTS.md` rule, no `CONSTRAINTS.md` finding, no ADR
+clause, no CI check. TD-5 would be the first. Zero hits for "minimality",
+"tech debt", "second reviewer", or "parallel reviewer" outside this planning
+file.
+
+### The 37 single-reviewer assumptions
+
+RESEARCH enumerated every site assuming one reviewer per (bead, cycle): 17
+in code, 5 in contracts, and 15 in tests. Full list in the report; the
+load-bearing ones are `reviewer_name` and `brief_path` as pure functions of
+(bead, cycle) (`src/review.rs:418-429`), `verdict_cycles` as a **deduped
+set** that cannot express partial completion (`src/review.rs:236-237`), the
+`launched_reviewers` key `(bead_id, cycle)` (`src/main.rs:1735`), and both
+reapers.
+
+One useful discovery: **the quorum seam already exists and is unused.**
+`verdict_heading_count` is computed at `src/main.rs:1796` and `:1939`,
+carried through `LaneStateInputs` (`src/lane.rs:89`), and then discarded at
+`src/lane.rs:121` with `let _ =`. RESEARCH recommends **not** using it — an
+advisory reviewer that gates lane state contradicts TD-6 — but it is there.
+
+### The strongest decomposition constraint
+
+**The test-harness generalization must land in the same bead as the first
+launch change, or the suite is red between beads.** `tests/drain.rs:1938`
+asserts a global `workspace create` tally of exactly 1;
+`tests/drain.rs:948-954` is a byte-exact whole-transcript `assert_eq!` on
+`gh` calls. Both break the moment a second reviewer launches. Three fake
+shims (`tests/drain.rs:1205-1335`, `:1348-1549`, and the inline one at
+`:1084`) have **no `workspace create` branch and a terminal `else … exit 2`**
+— a differently-named second reviewer hard-fails the drain inside them.
+Additionally, five fixtures return a single hard-coded `workspace_id`, so
+two reviewers would receive the *same* id and silently defeat reap-count
+assertions rather than failing loudly.
+
+`tests/drain.rs` is therefore a second contention point alongside
+`src/review.rs`, and Module G cannot be its own lane.
+
+### Provisional modules and bundles
+
+| Module | Location | Confidence |
+|---|---|---|
+| A — grammar and naming | `src/review.rs:11-31, 408-429` | HIGH |
+| B — brief template and builder | `src/review.rs:336-368, 431-461` | HIGH |
+| C — launch mechanics | `src/review.rs:463-575` | HIGH |
+| D — **non-blocking prompt seam** | `src/lane.rs:340-456, 643-660` | **MEDIUM** |
+| E — engine bookkeeping and gating | `src/main.rs:1625-1760` | HIGH |
+| F — lane-state quorum seam | `src/lane.rs:84-129` | HIGH (recommend unused) |
+| G — test harness | `tests/drain.rs` (2517 lines, 30 tests) | HIGH |
+| H — contracts and docs | ADR 0005, `abacus-execute`, `docs/lifecycle.md`, `AGENTS.md` | HIGH |
+
+Provisional bundles: **1** = A+B (same `src/review.rs` region; must land
+after all four prerequisites). **2** = C+D (carries the D2 amendment and the
+harness generalization). **3** = E (one contiguous region; splitting
+guarantees conflicts). **4** = H (no code overlap, parallelizable, but a
+real deliverable — `SKILL.md:46` and `:110-112` are what prevent S6).
+
+Provisional sequencing: 4 can start immediately; 1 after the prerequisites
+close; 2 third; 3 last.
+
+### Discovery captured to jot
+
+1. `rereview_heading` and its three `REREVIEW_HEADING_*` constants
+   (`src/review.rs:14-16, 412-415`) are **dead code** — the cycle-2+ heading
+   path was removed after PR 31 cycle 1 refuted it.
+2. The `reap_reviewers_with_verdicts` missing-status-guard asymmetry that
+   makes S1 destructive rather than merely wasteful.
+
+Both await operator-invoked `/jot-review`.
+
+*Status: RESEARCH delivered, awaiting operator gate. Three seam questions
+outstanding with the producer. ARCHITECTURE not started.*
