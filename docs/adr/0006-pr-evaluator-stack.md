@@ -63,8 +63,7 @@ status and can never block a merge. A second gate would duplicate severity
 decisions and deepen review arcs, and requires a genuinely separate
 authority boundary plus a fresh operator ruling (extending ADR 0005's
 cut-1 fence on check-flip authority). Advisory capacity is bounded by
-attention, not machinery: three evaluators is the recognized resting
-point, four an experimental ceiling requiring measured justification.
+attention, not machinery, and grows only through D1's admission routes.
 
 **D3 — Heading registry and the collision rule.** Correctness posts
 `## Adversarial review — cycle <n>` (ADR 0005 D4, unchanged). Simplicity
@@ -125,30 +124,27 @@ and tests a sibling. On the **third**, the orchestrator stops rework, puts
 the design question to the operator, and retires the warm author's
 accumulated context (fresh agent, same worktree, branch, and PR). Rework
 prompts are always regenerated from durable state, never "address cycle
-N". A repository-wide class ledger is rejected: class disposition is
-specific to a PR, head, and probe, and an old adjudication must never
-immunize a genuinely new regression.
+N".
 
-**D7 — The simplicity contract's clause set is bound; its prose is
-owned by the template.** The template file shipped beside the skill is the
-single owner of the brief's wording. This ADR binds the clause set it must
-contain: read-only posture with one permitted comment plus `jot` capture
-for pre-existing findings; the canonical heading per D3; the
-concepts-not-lines objective, including that a change adding lines while
-removing a concept is a valid simplification and that a simplification
-requiring an existing-test change is a behaviour change to report, not
-propose; the proposal shape (what is removed; which guarantee survives and
-how it checked; rough cost) with a mandatory considered-and-rejected
-section; the narrow test clause (changed or behaviour-implicated tests
-only; unit is behaviours and assertions — duplicate behavioural proof,
-assertions no longer pinning the named contract, coverage lost through
-folding, deletion, or thinning; never a suite inventory); the reduction-PR
-questions (did it overshoot; what adjacent bloat remains — restoration is
-a valid finding); volume by significance threshold and ranking with no
-numeric cap and an explicit reporting-nothing-is-valid clause; the
-exclusion list (generated code, vendored dependencies, language idioms,
-sub-5-line snippets, and code the bead's acceptance criteria require);
-and correctness-invariant framing vocabulary throughout.
+**D7 — The simplicity contract's core clauses are bound; its prose and
+tactics are owned by the template.** The template file shipped beside the
+skill is the single owner of the brief's wording. This ADR binds only the
+clauses that carry operator rulings or field calibration: read-only
+posture with one permitted comment plus `jot` capture for pre-existing
+findings; the canonical heading per D3; the simplicity question (is this
+the right shape for what the bead asked); the concepts-not-lines
+objective, including that a change adding lines while removing a concept
+is a valid simplification and that a simplification requiring an
+existing-test change is a behaviour change to report, not propose; the
+narrow test clause (changed or behaviour-implicated tests only; unit is
+behaviours and assertions — duplicate behavioural proof, assertions no
+longer pinning the named contract, coverage lost through folding,
+deletion, or thinning; never a suite inventory); and the proposal shape
+(what is removed; which guarantee survives and how it checked; rough
+cost) with a mandatory considered-and-rejected section — the field's
+calibration signal. Further tactics — reduction-PR probes, volume and
+ranking rules, exclusion lists, framing vocabulary — are template-owned
+and may evolve without revisiting this decision.
 
 **D8 — The test-focus mandate is trialled inside simplicity; promotion is
 evidence-gated.** Test bloat is an observed problem in the autonomous
@@ -162,8 +158,7 @@ worker-originated — decides promotion. Threshold: two independent PRs
 where the shadow finds material test defects the instructed simplicity
 reviewer missed, especially same-class misses. If bloat instead traces to
 bead specs or author contracts, those are fixed and no evaluator is
-added. Performance review is recognized as the only other credible
-candidate mode and is deferred on the same evidence bar.
+added.
 
 ## Consequences
 
