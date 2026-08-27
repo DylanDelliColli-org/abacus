@@ -101,6 +101,73 @@ so any orchestrator in any repo can run it without rediscovering it.
 - **OC-9** — An orchestrator can vary reviewer model and reasoning effort
   when it chooses to, via a documented mechanism, without any engine change.
 
+### The reviewer stack
+
+Ironed out at FRAMING by operator direction. The repo already has an agent
+roster, and most of it is **not** review-time — which is what keeps this
+stack from sprawling.
+
+**Three time slots, three different jobs.** An agent belongs to exactly one.
+
+| Slot | Agents | Runs against | Produces |
+|---|---|---|---|
+| **Plan-time** | `sherlock` (design rot, redundancy, verbosity, dead code, test gaps), `gaudi` (architecture smells, interface incoherence), `columbo` (test coverage), `victor` (bead freshness) | a scope or a planned bead tree, *before code exists* | beads |
+| **Review-time** — this stack | **correctness**, **simplicity** | a concrete diff on a live PR | one PR comment each |
+| **Post-deploy** | `rudy` | a running dev deploy | bug beads + report |
+
+**The review-time stack, in full:**
+
+| Reviewer | Question it answers | Gates? | Owner |
+|---|---|---|---|
+| **correctness** | Does this work, and can I make it fail? | **Yes** — owns `adversarial-review` | `ab-xuz` |
+| **simplicity** | Is this the right shape for what the bead asked? | No — advisory | **this epic** |
+
+Two members. That is the whole stack for now, and the epic ships when both
+are contracted.
+
+**Admission rule for any future member.** A review-time reviewer must answer
+a question that is:
+
+1. **Only answerable against a concrete diff** — if it can be answered from
+   a plan or a scope, it belongs to a plan-time agent, which files beads and
+   costs nothing per PR cycle.
+2. **Not already covered** by CI, clippy, the correctness reviewer, or a
+   plan-time agent.
+3. **Unconditional** — it runs every cycle on every PR. A reviewer needing a
+   launch predicate ("only if types changed") is out of scope; the predicate
+   is control flow the contract cannot express or verify.
+
+**Overlaps that must be stated, or someone will ask why we have both:**
+
+- **`sherlock` vs simplicity.** Mandates genuinely overlap — design rot,
+  redundancy, verbosity, dead code. The split is *when* and *what they
+  produce*: sherlock audits a scope during planning and files beads;
+  simplicity reviews an actual diff during review and posts proposals that
+  never become beads unless the operator accepts them. Neither subsumes the
+  other, because sherlock cannot see code that does not exist yet and
+  simplicity cannot see a scope that was never written.
+- **`gaudi` vs OC-3's architecture half.** `gaudi` gates the architectural
+  shape of a *planned epic* before workers dispatch. Simplicity judges the
+  architecture of what was *actually built*. The operator's original ask —
+  catch architectural mistakes in the PR — is squarely review-time. The
+  contract should name `gaudi` as the plan-time counterpart so the two do
+  not duplicate findings.
+- **`columbo` vs any future test reviewer.** `columbo` owns test coverage at
+  plan time. A review-time test reviewer would need to clear admission rule
+  2 against both columbo and the correctness reviewer. `pr-test-analyzer` is
+  the external candidate and does not obviously clear it.
+
+**Named candidates, all deferred.** Recorded so a later session does not
+re-derive them: `type-design-analyzer` (strongest — PR-scoped by design,
+rates encapsulation and invariant expression/usefulness/enforcement; but
+overlaps OC-3's data-structure half), `silent-failure-hunter` (good subject,
+hostile contract — *"call out every instance… no matter how minor"* is the
+inverse of a severity floor), `pr-test-analyzer` (see columbo above),
+`comment-analyzer` (too narrow to earn a context per cycle). Not candidates:
+`code-reviewer` (our correctness reviewer supersedes it) and
+`code-simplifier` (**it edits** — a mutating agent in a reviewer workspace
+on the main checkout).
+
 ### Non-goals
 
 1. **No engine changes.** Decision 8. Not the launch path, not the parser,
