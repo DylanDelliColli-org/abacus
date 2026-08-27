@@ -161,8 +161,19 @@ epic blocked on four beads. Two were engine-side and no longer apply.
   cycle number, adjudicated inside the correctness comment.
 - **OQ-5 — is TD-5 a known anti-pattern?** RESOLVED. Line count is dead as a
   target; `OC-5` carries the intent. See the restoration case below.
-- **OQ-6 — one simplicity agent or several?** RESOLVED by practice: one.
-  Field usage is a single simplicity reviewer, and it works.
+- **OQ-6 — one simplicity agent or several?** RESOLVED: one. Field practice
+  runs one and it works; RESEARCH adds the principled distinction. OQ-4
+  split correctness from simplicity because those mandates **conflict** — a
+  correctness finding demands more code, minimality demands less, and one
+  context must arbitrate silently. Minimality, architectural strategy, and
+  data-structure choice **do not conflict**; they are three probes of one
+  question ("is this the right shape for what the bead asked?"), and a
+  finding in one routinely *is* a finding in another — the wrong data
+  structure is usually *why* the code is non-minimal. Splitting would
+  produce three reports restating one finding from three angles, which is
+  worse for the operator. Caveat to carry: if `type-design-analyzer` ever
+  joins the stack it overlaps OC-3's data-structure half; decide then
+  whether OC-3 narrows, rather than shipping both without noticing.
 - **OQ-7 — epic success metric.** SUPERSEDED by the Fresh-Orchestrator
   metric above.
 - **OQ-8 — should `ab-5lw` be folded into `ab-xuz` and closed?** Open;
@@ -284,8 +295,28 @@ herdr agent start <name> --kind codex --pane <id> -- --model <m> -c model_reason
 ```
 
 herdr forwards trailing args after `--`; codex takes `-m/--model` and `-c`.
-**Untested.** Needs no engine change under manual orchestration. This is
-`OC-9`.
+Needs no engine change under manual orchestration. This is `OC-9`.
+
+**CONFIRMED 2026-08-27 by RESEARCH**, upgrading this from "mechanism exists,
+untested". `strings` on the herdr binary surfaces its own embedded operator
+guidance, verbatim: *"Pass native agent arguments only after `--`"*, with
+the worked example `herdr agent start reviewer --kind codex --pane <id> --
+<agent-args...>` — literally our case. Corroborated by the binary's error
+strings `invalid_agent_argument` and *"agent arguments cannot be encoded
+safely for the target shell"*, which exist only if herdr shell-encodes
+AGENT_ARG onto the launched command line. Codex side: `codex --help:75-76`
+documents `-m, --model <MODEL>`.
+
+Two constraints for the contract: **prefer `-m` over `-c`** (`-c` parses its
+value as TOML with a raw-string fallback — a needless parsing surface for a
+model name); and **model strings must survive herdr's shell encoding** —
+alphanumerics and dashes are safe, anything exotic returns
+`invalid_agent_argument`.
+
+Residual uncertainty, narrow: nobody has observed a codex process actually
+receiving the flag. That is a confirmatory smoke test at implementation, not
+a planning risk. Per-reviewer **kind** selection carries no risk at all —
+`--kind` is a first-class herdr flag.
 
 ### Six hazards the contract must carry
 
@@ -321,6 +352,128 @@ cited line or provenance claim needed correcting in the adjudication.
 
 **F. File accepted concerns as beads in the same breath**, or they become
 the next cycle's blockers.
+
+---
+
+## Contract content RESEARCH contributed
+
+Findings that survive the reframe and belong in the simplicity brief. From
+the scope-2 RESEARCH passes, which remain valid where they concern brief
+content rather than engine code.
+
+### OC-5, proposed wording for ratification
+
+Refines the planner's "unnecessary code, not line count" with a countable
+unit. **Count concepts, not lines** — a concept being a name a reader must
+hold: a type, a trait, an abstraction layer, a configuration knob, a
+control-flow branch, a file. Unlike line count it is not gameable by
+density: you cannot make a concept disappear by writing a nested ternary.
+
+> **OC-5** — The reviewer targets unnecessary code and unnecessary
+> **concepts** — names a reader must hold: types, abstraction layers,
+> configuration knobs, control-flow branches, files. Line count is not the
+> objective and is never cited as a reason. A change that adds lines while
+> removing a concept is a valid simplification, as is one that adds lines to
+> eliminate a nested ternary or a dense one-liner. **If a proposed
+> simplification would require changing an existing test, it is a behaviour
+> change, not a simplification** — report it as such or drop it. A proposal
+> that increases both lines and concepts must state explicitly why; an
+> unjustified one is a defect in the review.
+
+Supporting evidence that the original wording was an anti-pattern:
+Anthropic's own `code-simplifier.md:38` classifies *"Prioritize 'fewer
+lines' over readability (e.g., nested ternaries, dense one-liners)"* as an
+**over-simplification failure** — precisely what a reviewer incentivised to
+cut produces. A numeric target is one the reviewer can always hit by
+proposing density.
+
+### Finding volume: threshold and ordering, never a cap
+
+Resolves the collision between the external sets' top-3 cap and `ab-xuz`
+amendment 1's exhaustive sweep. **The resolution is principled, not
+convenient: exhaustive sweep is a consequence of GATING, not of
+thoroughness.** Each unenumerated *correctness* finding costs a full extra
+REFUTED cycle — relaunch, rework dispatch, re-review, re-adjudication,
+10-18 minutes — *because the findings gate*. An advisory reviewer's
+unreported finding costs nothing but the finding. **The mandate does not
+transfer, and the brief must say so in those terms**, or a future session
+will "fix" the inconsistency and reintroduce it.
+
+But do not adopt a numeric cap either: **a fixed cap has the identical
+defect to a line-count target — it is a quota the reviewer will fill.** Use
+instead:
+
+- **A significance threshold** — report nothing below it. Mechanism borrowed
+  from `code-reviewer.md:41` ("only report issues with confidence ≥ 80").
+  *Copy the mechanism, not the numbers* — that file's bands and gate are
+  internally inconsistent as shipped.
+- **An explicit "reporting nothing is a valid and expected outcome"
+  clause** — the advisory analogue of the goal-language hazard (B). Without
+  it, a reviewer with no quota still manufactures findings.
+- **An exclusion list** — tests, generated code, vendored deps, sub-5-line
+  snippets, language idioms; plus one entry no external list has and this
+  contract needs: **never propose removing code the bead's own acceptance
+  criteria require.**
+- **Ordering, not capping** — report findings ranked by significance, most
+  significant first. An operator who reads three and stops has read the
+  three that mattered: the cap's benefit with none of its quota pressure.
+
+### Membership is unconditional
+
+`commands/review-pr.md:36-43` shows the pattern to avoid — *"If test files
+changed: pr-test-analyzer"*, *"If types added/modified:
+type-design-analyzer"*. A launch predicate makes the procedure conditional
+and the contract unverifiable. State in the contract: **every reviewer runs
+every cycle; a reviewer requiring a launch predicate is out of scope.** This
+is already operator decision 4, but consistent for a reason nobody had
+written down.
+
+### The external set, finally assessed
+
+**Reusable:** `comment-analyzer.md:79`'s explicit read-only clause as a
+posture sentence (*"You analyze and provide feedback only… Your role is
+advisory"*); `code-reviewer.md:41`'s single-number threshold as a mechanism;
+`type-design-analyzer.md:60-87`'s fenced-template discipline and four-axis
+rating shape (Encapsulation, Invariant Expression, Invariant Usefulness,
+Invariant Enforcement) as a model for OC-3; `pr-test-analyzer.md:40, :72`'s
+false-positive guards; the `agentic-awesome-skills` test red flag, now
+folded into OC-5.
+
+**Actively wrong for this contract:** `silent-failure-hunter.md:114`'s *"no
+matter how minor"*, the direct inverse of a severity floor; **the entire set
+has no evidence bar** — not one of the six requires reproducing or executing
+anything before reporting, so their findings are counterfactual by
+construction; `code-simplifier` edits autonomously; and several hardcode one
+codebase's standards as universal (`code-simplifier.md:15-20` is
+ES-modules/React; `silent-failure-hunter.md:123-128` names another repo's
+helpers). **OC-3's "against the patterns already in this repository" is
+stronger than anything in the external set.**
+
+**Useful negative:** no source surveyed, internal or external, has prior art
+for multi-reviewer bookkeeping or any coordination protocol between
+reviewers. `commands/review-pr.md:45-55` names sequential-versus-parallel as
+advisory prose with no mechanism, and its aggregate vocabulary matches none
+of its own agents' vocabularies. The convention this epic writes is
+unprecedented in every source checked.
+
+### Citation defect found and corrected
+
+**"ADR 0003 D10" does not exist.** ADR 0003 has no bold-D decision headings
+at all; the no-config-file decision is in its *"Not built now"* list at
+`docs/adr/0003-pr-validation-and-auto-merge.md:205-215` as *"a configuration
+file (opt-in stays invocation)"*. Verified this session.
+
+This matters more than a dangling reference: a `D10` **does** exist, at
+`docs/adr/0004-foreign-repo-onboarding.md:165` ("Two-session negotiation
+with seat-scoped authority"), so a future session greping for it lands on a
+real but unrelated decision. `ab-init-plan-5ka`'s description propagates the
+wrong label; a correcting comment was added to that bead 2026-08-27.
+
+Related: `ab-init-plan-5ka` **already claims the per-repo config surface and
+already names "agent kind?" as a candidate item.** Scope 3 avoids the
+collision naturally — this epic defines no configuration file, because the
+orchestrator passes flags by hand. Recorded so a future engine epic does not
+walk into it.
 
 ---
 
