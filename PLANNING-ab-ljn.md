@@ -1021,7 +1021,45 @@ including the OC-9 confirmatory smoke (observe codex actually receiving
 here): the new unit test folds no existing cases, deletes nothing, and
 thins no assertions — it is purely additive to the parser test group.
 
-*TEST-STRATEGY drafted, awaiting operator gate.*
+*TEST-STRATEGY approved 2026-08-27.*
+
+---
+
+## RECORD
+
+Deliverable: **`docs/adr/0006-pr-evaluator-stack.md`** (proposed), decisions
+D1–D8, registered in `docs/INDEX.md`, docs-doctor clean. It cites the
+approved framing (stories, admission rules), the field evidence, the locked
+architecture (mode model, equivalence invariant), and the test contract
+(the D3 pinning test).
+
+**Review gate, both legs run in fresh Codex contexts of a different
+lineage, per the design-document hook:**
+
+- **Bloat review** (`w84:p4`, one pass): five cuts, operator-disposed —
+  D8's performance sentence CUT; D6's repo-wide-ledger rationale CUT; D2's
+  numeric advisory ceilings CUT; D7 SHRUNK to the ruled clauses with
+  tactics released to the template. REJECTED with reasons: cutting D5 (the
+  operator's explicit permanent-fallback ruling; the equivalence invariant
+  binds current DECOMPOSITION work) and cutting D6's second/third-instance
+  rules (highest-evidence content in the epic; the third-instance stop
+  happens at adjudication, already operator work under ADR 0005 — no new
+  intervention surface, so the zero-interventions success condition is not
+  touched).
+- **Spec validation** (`w84:p5`, one pass, on the surviving document): five
+  findings, ALL ACCEPTED as faithfulness/wording fixes, none reopening a
+  decision — (1) the ADR now states it records target state, implemented by
+  this epic's beads; (2) D2 reworded so the gate machinery visibly stays
+  with ADR 0005 (no silent amendment); (3) D4's deferred-filing sentence
+  was rationale reading as authorization — now explicitly forbidden;
+  (4) D8 restores two ratified trial controls (known-bloated PRs in the
+  sample; crowding-out detection); (5) D3's pinning test correctly
+  described as specified-not-yet-landed.
+
+Commits: draft `b5bcadc`, bloat dispositions `ceaa3bb`, spec fixes
+`bd4f463`.
+
+*RECORD complete, awaiting operator gate. DECOMPOSITION last.*
 
 ---
 
