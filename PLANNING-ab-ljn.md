@@ -23,6 +23,24 @@ Operator decisions taken at tier selection, binding on everything below:
   solely through operator-invoked `/jot-review`, preserving the Prime
   Directive.
 - **Both reviewers run every cycle, in parallel.**
+- **Two separate agents, not one agent with a wider brief.** Confirmed at
+  the FRAMING gate after the operator raised it directly. The deciding
+  argument is a recurring posture conflict: a correctness finding very often
+  *demands more code* — add a guard, validate an input, handle a case —
+  while TD-5 says almost never propose a line-count increase. A single
+  context holding both mandates must arbitrate that silently, per finding,
+  invisibly to the operator. Two reports make the tradeoff explicit and
+  adjudicable. Supporting: `ab-5lw` exists because brief framing biases
+  reviewer incentives hard, and an agent with two mandates has two
+  independent incentives to manufacture findings; ADR 0005 D3 makes
+  reviewers deliberately fresh and ephemeral per cycle, so a second
+  discipline in the same context halves the attention each receives — on top
+  of the nine amendments `ab-xuz` already adds to that brief.
+
+  Recorded because it was close: folding would have eliminated TD-7
+  entirely, dropped the `ab-cye` and `ab-645` dependencies, roughly quartered
+  the work, and halved the review cost this feature adds. It was rejected on
+  the posture conflict, not on cost.
 
 ---
 
@@ -76,10 +94,9 @@ Stable identifiers for traceability through TEST-STRATEGY and DECOMPOSITION.
 
 ### Epic success metric
 
-**Proposed, pending operator decision — see Open question OQ-2.**
-
-Candidate: across the first 20 PRs reviewed by both agents, at least 50%
-carry one or more tech-debt findings the operator accepts.
+**Decided at the FRAMING gate 2026-08-27:** across the first 20 PRs reviewed
+by both agents, at least 50% carry one or more tech-debt findings the
+operator accepts.
 
 The metric is deliberately about *accepted* findings rather than findings
 produced, because a reviewer that reliably produces ignored output has
@@ -109,8 +126,17 @@ failure of TD-7 corrupts the correctness gate that already works.
 
 ### Prerequisites
 
-Four open beads touch the exact surfaces this epic modifies. Ordering is an
-open question (OQ-1); the interactions are facts.
+**Decided at the FRAMING gate 2026-08-27: this epic blocks on all four.**
+Wired as `br` dependencies on `ab-ljn`; `br blocked` confirms
+`ab-ljn` blocked by `ab-5lw`, `ab-645`, `ab-cye`, `ab-xuz`. The reviewer
+contract therefore reaches its final form before a second brief derives from
+it, and no rework is needed at the seams.
+
+These gate **implementation, not planning.** This planning run proceeds now;
+the epic simply does not appear in `br ready` until the four close.
+DECOMPOSITION must decide whether each implementation child carries the
+dependencies itself or inherits the block from the epic — an epic-level
+block alone does not stop a child from appearing ready.
 
 - **`ab-cye`** — *verdict heading must be the first body line, so a relayed
   verdict with an attribution preface is invisible and its cycle is
@@ -141,17 +167,21 @@ open question (OQ-1); the interactions are facts.
 
 ## Open questions
 
-- **OQ-1 — Prerequisite ordering.** Does this epic block on `ab-cye`,
-  `ab-xuz`, `ab-5lw`, and `ab-645`, or does it proceed against current HEAD
-  with declared ordering and accept the rework? Unanswered.
-- **OQ-2 — Epic success metric.** Is the proposed accepted-findings metric
-  the right one, and is 50% of 20 PRs the right bar? Unanswered. Related
-  tension: the north star's kill criterion is that the machinery must not
-  make execution slower than vanilla agent sessions, and this reviewer
-  doubles review cost on arcs documented at up to 21 cycles.
+- **OQ-1 — Prerequisite ordering.** RESOLVED 2026-08-27: block on all four
+  (`ab-cye`, `ab-xuz`, `ab-5lw`, `ab-645`), wired as `br` dependencies.
+- **OQ-2 — Epic success metric.** RESOLVED 2026-08-27: accepted-findings
+  rate, 50% of the first 20 PRs. The cost tension against the north star's
+  kill criterion is noted but not made part of the metric; if the second
+  reviewer proves to slow drains materially, that is a kill-criterion
+  conversation, not a metric adjustment.
 - **OQ-3 — Verdict grammar for an advisory reviewer.** Does the tech-debt
   report carry a REFUTED / NOT REFUTED verdict line at all, given that
-  nothing acts on it? Deferred to ARCHITECTURE; recorded here so it is not
-  lost.
+  nothing acts on it? Deferred to ARCHITECTURE by design; recorded here so
+  it is not lost. Note the interaction with TD-7: reusing the correctness
+  verdict vocabulary on the same PR is the most likely route to a
+  miscounted cycle.
+- **OQ-4 — Separate agent or wider brief.** RESOLVED 2026-08-27 at the
+  FRAMING gate: two separate agents. Rationale recorded under the operator
+  decisions at the top of this file.
 
-*Status: FRAMING drafted, awaiting operator gate. RESEARCH not started.*
+*Status: FRAMING approved 2026-08-27. RESEARCH next.*
