@@ -101,6 +101,28 @@ so any orchestrator in any repo can run it without rediscovering it.
 - **OC-9** — An orchestrator can vary reviewer model and reasoning effort
   when it chooses to, via a documented mechanism, without any engine change.
 
+Added at the 2026-08-27 placement ruling (the converged per-repo inventory's
+abacus-execute items fold into this epic):
+
+- **OC-10** — Each review cycle's brief is generated from a **per-PR
+  convergence ledger** derived from the PR's verdict and adjudication
+  comments: finding classes, dispositions, regression probes, enforcement
+  seams, follow-up beads. A finding re-blocks only if its class is new or a
+  recorded regression is demonstrably live. Second instance of a class →
+  the guard moves to the narrowest shared seam and a sibling is tested.
+  Third → the orchestrator stops rework and puts the design question to the
+  operator. Never a repo-wide file.
+- **OC-11** — Every rework prompt is regenerated from durable state
+  (current head, base, accepted findings, class ledger, exact failing
+  probes) — never "address cycle N." At a class's third instance the
+  accumulated author context is retired: fresh agent, same worktree, same
+  branch, same PR. No fixed recycle-after-N cycle count.
+- **OC-12** — Adjudication is a transaction: it states the reviewed head,
+  surfaces examined, material exclusions, and completeness; and every
+  accepted concern receives its durable disposition in the same operation —
+  folded into rework, filed as a bead whose ID appears in the adjudication,
+  or explicitly rejected.
+
 ### The PR evaluator stack
 
 Ironed out at FRAMING by operator direction. This is the set of agents that
@@ -844,8 +866,14 @@ living per-repo is what drifted (`-v2` incident).
 the only proposal with repeated evidence that it turns several cycles into
 one rather than making each cycle somewhat cheaper.
 
-*Undecided at this point: whether these become contract content inside this
-epic's DECOMPOSITION, separate beads, or both. Operator decision pending.*
+**Placement RULED by the operator 2026-08-27:** the abacus-execute items —
+the per-PR convergence ledger (1), warm-author refresh (3), and the
+adjudication transaction (6) — **fold into this epic** as contract content;
+they become stories OC-10..OC-12. The per-repo template items — PR identity
+contract (2), reviewer verification budget (4), environment-issues ledger
+(5) — **feed init planning**, routed to `ab-init-plan-5ka` as RESEARCH
+input alongside the laning questions already there. Item 7 already has its
+owner (`ab-testvalues-consumption-d01`); a cross-reference comment added.
 
 ---
 
