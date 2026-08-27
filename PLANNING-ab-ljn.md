@@ -183,8 +183,26 @@ block alone does not stop a child from appearing ready.
 - **OQ-4 — Separate agent or wider brief.** RESOLVED 2026-08-27 at the
   FRAMING gate: two separate agents. Rationale recorded under the operator
   decisions at the top of this file.
+- **OQ-6 — Is "tech-debt prevention" one agent or several?** Raised
+  2026-08-27 by operator-supplied prior art. NousResearch hermes-agent
+  issue 379 proposes *three* parallel reviewers — code reuse, code quality,
+  efficiency — on the explicit ground that "three focused agents > one
+  general agent" because each can search deeply "without context dilution."
+  That is the same argument that decided OQ-4 one level up. This epic
+  currently bundles three concerns into one agent: minimality, architectural
+  strategy, and data-structure choice. **Planner recommendation: keep one
+  agent.** Unlike correctness-versus-minimality, these three share a single
+  lens — "is this the right shape for the problem?" — and do not pull
+  against each other, so the dilution argument is much weaker. Splitting
+  further also multiplies review cost against a kill criterion this epic
+  already strains. Operator decision required at the RESEARCH gate.
 - **OQ-5 — Does TD-5 as written encode a known anti-pattern?** Raised
   2026-08-27 by operator-supplied prior art, after FRAMING was approved.
+  **Now supported by three independent sources, not one** — see the RESEARCH
+  inputs section. Planner recommendation is firm: reword TD-5 to target
+  *unnecessary code and unnecessary concepts* rather than *line count*, and
+  state explicitly that a change which adds lines while removing a concept
+  is a valid simplification. Operator decision required at the RESEARCH gate.
   Anthropic's official `code-simplifier` agent
   (`~/.claude/plugins/marketplaces/claude-plugins-official/plugins/code-simplifier/agents/code-simplifier.md`,
   section 4 "Maintain Balance") explicitly warns against prioritising
@@ -199,6 +217,17 @@ block alone does not stop a child from appearing ready.
 
 ## RESEARCH inputs supplied by the operator
 
+**Convergent finding across the set: every source that takes a position
+rejects line count as the objective.** Anthropic's simplifier lists
+prioritising "fewer lines" over readability as an over-simplification
+failure. The `agentic-awesome-skills` skill states "the goal is not fewer
+lines" and rejects "fewer lines is always simpler" as a named
+rationalisation, adding: "a 1-line nested ternary is not simpler than a
+5-line if/else. Simplicity is about comprehension speed, not line count."
+The `githubnext` workflow states "explicit code is often better than compact
+code." Three independent authors, same conclusion. This is the evidence
+behind OQ-5.
+
 - Anthropic's official `code-simplifier` agent (path above). A
   byte-identical body also ships in the same marketplace's
   `pr-review-toolkit` plugin, differing only in frontmatter examples.
@@ -207,6 +236,37 @@ block alone does not stop a child from appearing ready.
   bar, threat model, severity grading, verdict grammar, or probes
   requirement, and its standards section is JS/TS/React-specific. It is not
   a template for a read-only adversarial reviewer.
+- **`agentic-awesome-skills` code-simplification skill**
+  (github.com/sickn33/agentic-awesome-skills). An editing skill, but its
+  rules are the sharpest of the set. Directly reusable for our brief:
+  *"Simplification requiring modified tests"* is listed as a **red flag**
+  meaning behaviour probably changed — a precise, checkable invariant for a
+  reviewer proposing a simplification. Also: never simplify code you do not
+  understand; leave no dead code; do not weaken error handling; do not
+  rename by preference rather than convention. Its "when NOT to use" list
+  (code already clean; module about to be rewritten; performance-critical
+  path) is a usable false-positive guard.
+- **`githubnext/agentics` code-simplifier workflow.** A scheduled editing
+  workflow that opens PRs. Structurally unlike ours, but confirms the same
+  posture: never change what the code does, run the tests before proposing,
+  revert if they fail, prefer focused edits over rewrites.
+- **`githubnext/agentics` duplicate-code-detector workflow.** *The closest
+  structural analogue to this epic* — read-only, reports only, never
+  modifies files. Three ideas worth taking:
+  (a) an explicit **significance threshold** before reporting at all
+  (">10 lines duplicated OR 3+ instances");
+  (b) a hard **findings cap** — "limit to the top 3 most significant
+  patterns" — which **collides with `ab-xuz` amendment 1**, requiring
+  exhaustive sweep on stable designs; ARCHITECTURE must reconcile a volume
+  cap against exhaustive enumeration;
+  (c) an explicit **exclusion list** (tests, generated code, vendored deps,
+  boilerplate, snippets under 5 lines, language idioms) as a false-positive
+  guard. This epic needs its own.
+- **NousResearch hermes-agent issue 379** — "Simplify Skill: Parallel Code
+  Review & Cleanup". Independently corroborates the OQ-4 decision: it
+  proposes parallel specialised reviewers on the explicit ground that
+  "three focused agents > one general agent" because each searches deeply
+  "without context dilution." Also the source of OQ-6.
 - The same `pr-review-toolkit` plugin ships five sibling agents —
   `code-reviewer`, `comment-analyzer`, `pr-test-analyzer`,
   `silent-failure-hunter`, and `type-design-analyzer`. The last is closer to
