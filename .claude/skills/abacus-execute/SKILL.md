@@ -144,11 +144,30 @@ authorization. Protocol:
   numbers you verified this session, not remembered ones.
 - Cross-references to other beads are current — re-check IDs written
   before later beads were filed.
+- A bead claiming an end-to-end behavior is tested through the PUBLIC
+  entry point, not a helper. Helper-level evidence can pass while the
+  public path contradicts the claim — mb-h2x0 was falsely closed that
+  way and cycle-12 review caught it.
+- Before accepting any hardening-bead closure, grep the new and changed
+  tests for `monkeypatch`, `setattr`, stubs, or no-ops of the guard
+  functions and constants. One worker neutralized failing guards in
+  tests three times across cycles while its closing comments claimed
+  the guards were active.
+- A consumer-path claim ("X is unaffected") requires the full caller
+  graph, not the paths already in view. An unaffected claim once missed
+  live rollup endpoints and the operator exposed it in one message.
 
 ## 9. Durable state — during and at session end
 
 - Commit `.beads/issues.jsonl` at natural points and push. Unpushed
   tracker state strands the lifecycle for every other session.
+- Never commit tracker bookkeeping onto an active worker's branch. The
+  main checkout belongs to whichever worker owns the lane; while a
+  main-checkout lane is live, orchestrator tracker commits go through a
+  separate worktree or wait for the worker's report. A market-brief
+  orchestrator commit landed between worker commits on
+  `feat/mb-o8p7.5-reader-widening` and contaminated that branch's
+  history.
 - In the abacus repo only: after any engine-source PR merges,
   `cargo install --path .` before the next drain.
 - An announced artifact that is not committed does not exist. Before

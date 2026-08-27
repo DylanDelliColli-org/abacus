@@ -193,6 +193,37 @@ status context string live as constants in a single module
 (`src/review.rs` or a shared types seam); deployed repo contracts cite
 them; a builder→parser round-trip test makes drift mechanical to catch.
 
+## Clarification 2026-08-27 — what the decisions above imply for an operator
+
+Added after a measured comprehension failure, not as a change of decision.
+An orchestrator reading this ADR cold on 2026-08-20 inferred an
+acceptance-gate inversion and a one-shot review cycle from designed
+behavior, and filed four notes against it. The decisions were correct; what
+they imply was not stated anywhere an operator would look. Three
+implications, all already entailed above:
+
+- **A closed bead is an author-done signal, not an acceptance.** The worker
+  closes when its own contract is satisfied. D6 already resolves the overlap
+  in lane-state's favor — a closed bead whose lane is `AwaitingReview` is
+  awaiting review, not accepted. Acceptance is the D4 adjudication comment
+  plus, where configured, the required `adversarial-review` status at merge.
+- **The adjudication gate is human-hand-posted and produces no prompt.** Per
+  D4 the engine parses adjudications and never writes one. Per D2 the drain
+  never blocks on the gate: it re-derives, finds no available transition,
+  and exits 0. An operator unaware of the D4 grammar therefore leaves every
+  lane waiting indefinitely while the drain keeps reporting success.
+- **`run` and `drain` are different commands with different jobs.** D2 makes
+  `drain` the loop that continues the ready front and performs review
+  reconciliation; D6 makes `run` a single-dispatch settle whose nominal
+  exit-0 outcome is `AwaitingReview`. A `run` that closes one bead and parks
+  a lane awaiting review has succeeded, not truncated.
+
+The operator-facing surface for these is `docs/lifecycle.md`. It also
+records a standing conflict this ADR does not have authority to resolve:
+`NORTH-STAR.md` states "a reviewer accepts, the bead closes", which
+contradicts D3–D4 as deployed. Amending the north star is `/north-star`
+revise mode — an explicit operator act.
+
 ## Test contract
 
 TEST-STRATEGY (approved 2026-08-18): 28 new tests — 17 unit, 11

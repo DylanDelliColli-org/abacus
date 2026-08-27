@@ -8,7 +8,7 @@
    "docs/architecture.md",
    "docs/history/INDEX.md"
  ],
- "standing_files": [],
+ "standing_files": ["docs/lifecycle.md"],
  "managed_globs": [],
  "managed_files": ["AGENTS.md", "CONSTRAINTS.md", "NORTH-STAR.md"],
  "alias_symlinks": [],
