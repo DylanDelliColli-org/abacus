@@ -964,10 +964,64 @@ instrumentation. `docs/lifecycle.md`'s engine-centric "launch reviewer"
 phrasing gets a one-line mode note in the implementation bead touching
 docs, not a rewrite.
 
-*ARCHITECTURE drafted, awaiting operator gate. TEST-STRATEGY next — small
-by construction: the deliverables are a skill, a template, and an ADR;
-the test surface is docs-doctor, the ADR review gate, and the acceptance
-checklists above.*
+*ARCHITECTURE approved 2026-08-27.*
+
+---
+
+## TEST-STRATEGY
+
+Producer substitution recorded: inline. The deliverables are a skill, a
+template asset, and an ADR — no production code — so the strategy is small
+by construction and mostly [no-test]-class, justified per policy below.
+
+**Budget arithmetic.** Measured this session: the full suite runs in
+**9.0s wall** (`cargo test`, 536% cpu) against
+`FULL_SUITE_WALL_CLOCK_BUDGET_SECONDS = 30` → **21s remaining**. Proposed
+delta: **one unit test, estimated <0.01s.** Effect on budget: nil.
+
+**The one automated test — pin the equivalence invariant.**
+`src/review.rs` tests module, extending the existing parser test group
+(bias-toward-extending satisfied; sits beside
+`review_comment_facts`' tests):
+
+- Assert `heading_cycle("## Simplicity review", VERDICT_HEADING_PREFIX)`
+  returns `None`, and that `review_comment_facts` over a comment stream
+  containing a simplicity comment plus a cycle-N correctness verdict
+  yields `verdict_cycles == [N]` — i.e. **the advisory heading is
+  invisible to engine bookkeeping**, the mechanical form of A1's
+  equivalence invariant and the S1 mitigation. Red-first: assert against
+  a deliberately colliding heading (`## Adversarial review — cycle 3 —
+  tech debt`) to demonstrate the failure the rule prevents, then the
+  canonical heading passing.
+- Test-only change; no production code touched, so decision 8 (no engine
+  changes) is respected. Known drift surface accepted and documented: the
+  heading string is contract-owned (skill side), so the test hardcodes it —
+  if the canonical heading ever changes, this test is the tripwire that
+  forces the cross-artifact review.
+
+**[no-test] justification for everything else** (per the standing policy:
+docs/config changes justify `[no-test]` in bead notes): the skill rewrite,
+the brief template, and the ADR have no code path. Their verification is:
+
+| Deliverable | Verification mechanism |
+|---|---|
+| Skill rewrite | Close-gate checklist: every A2 section present; §1 mode model wording; grep-verifiable absence of the old unconditional ban |
+| `simplicity-brief.md` | Close-gate checklist: all nine A3 clauses present, each grep-anchored (heading string, "considered and rejected", the test-clause unit, the exclusion list, no attack-verb vocabulary — a negative grep for the trigger-word list) |
+| ADR 0006 | `docs-doctor --repo . --json` clean (corpus-managed), plus the mandatory design-document review gate: bloat review + spec validation in fresh contexts, operator-disposed |
+| Adjudication additions | Byte-compatibility check: the §4 grammar block is unchanged byte-for-byte; additions are new prose only (protects mode equivalence for correctness artifacts) |
+
+**Field validation — the trial bead is this epic's integration analog.**
+The contract's real test is one full manual two-evaluator cycle run from
+the finished skill by an orchestrator using only the written procedure
+(the Fresh-Orchestrator metric). The DECOMPOSITION trial bead carries it,
+including the OC-9 confirmatory smoke (observe codex actually receiving
+`--model`). Not a cargo test and not pretended to be one.
+
+**Coverage-loss tripwires check** (required at DECOMPOSITION, pre-stated
+here): the new unit test folds no existing cases, deletes nothing, and
+thins no assertions — it is purely additive to the parser test group.
+
+*TEST-STRATEGY drafted, awaiting operator gate.*
 
 ---
 
