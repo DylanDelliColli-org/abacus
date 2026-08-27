@@ -282,8 +282,11 @@ epic blocked on four beads. Two were engine-side and no longer apply.
   whether OC-3 narrows, rather than shipping both without noticing.
 - **OQ-7 — epic success metric.** SUPERSEDED by the Fresh-Orchestrator
   metric above.
-- **OQ-8 — should `ab-5lw` be folded into `ab-xuz` and closed?** Open;
-  planner recommends yes.
+- **OQ-8 — should `ab-5lw` be folded into `ab-xuz` and closed?** RESOLVED
+  2026-08-27: yes. `ab-5lw` closed as absorbed; `ab-xuz` carries the
+  neutrality clause as its amendment 10, with the superseding filter-safer
+  field wording recorded in an `ab-xuz` comment. Acceptance criteria
+  transfer verbatim.
 - **OQ-10 — does `simplicity` keep the data-structure/type mandate, or does
   it split into a second advisory evaluator?** Open. OQ-6 resolved that the
   three halves do not conflict, which argues for one. Against:
@@ -299,10 +302,15 @@ epic blocked on four beads. Two were engine-side and no longer apply.
   The operator's original framing was "two faster, less expensive models
   with more targeted instructions." Still no measurement exists, but the
   cost of trying is now a brief rather than an epic.
-- **OQ-12 — a third evaluator for test focus?** Raised by the operator
-  2026-08-27 and rated high priority: **test bloat is an observed problem in
-  the autonomous execution layer.** Under discussion with a Codex peer;
-  operator rules at the decision point.
+- **OQ-12 — a third evaluator for test focus?** RESOLVED 2026-08-27 by
+  operator ruling after the two-round Codex discussion: **two evaluators
+  now, plus the narrow test clause in simplicity** (unit: behaviours and
+  assertions, not concepts — duplicate behavioural proof, assertions that no
+  longer pin the named contract, coverage lost through folding, deletion, or
+  thinning; explicitly not a suite inventory). The shadow trial becomes a
+  DECOMPOSITION bead with the promotion threshold as specified below (two
+  independent PRs where a shadow specialist finds material defects the
+  instructed simplicity reviewer misses). Discussion record follows.
 
   Planner position, which **reverses an earlier dismissal.** My first
   instinct was that simplicity covers it, since tests are code and
@@ -471,9 +479,12 @@ epic blocked on four beads. Two were engine-side and no longer apply.
     review against — a per-repo declaration gap, which is init/onboarding
     territory, not evaluator territory.
 - **OQ-9 — does the contract belong only in the skill, or also in an ADR?**
-  Open. The skill travels and is where an orchestrator reads; an ADR is
-  binding and survives skill rewrites. Deferred to RECORD, which is
-  artifact-conditional by design.
+  RESOLVED 2026-08-27: **also an ADR.** RECORD produces one covering the
+  binding decisions — the two-evaluator convention, per-evaluator authority
+  (one gate), the heading-collision rule, the adjudication binding, and the
+  convergence controls — while the skill carries the operational procedure.
+  Placement per the RECORD rules: the file lives in `docs/adr/` so the
+  design-document review gate fires.
 
 ---
 
@@ -907,5 +918,8 @@ for a future engine epic and should not be re-derived. Highlights:
 dead code. And the `reap_reviewers_with_verdicts` missing-status-guard
 asymmetry underlying S1. Both await `/jot-review`.
 
-*Status: FRAMING rewritten under scope 3, awaiting operator gate. RESEARCH
-to be re-run scoped to the contract once FRAMING is approved.*
+*Status: FRAMING APPROVED 2026-08-27 — all twelve open questions resolved
+(OQ-12 two evaluators + test clause + trial bead; OQ-8 `ab-5lw` folded and
+closed; OQ-9 skill + ADR). Stories OC-1..OC-12. Prerequisite: `ab-xuz`
+only. Next: scoped RESEARCH — map the current `abacus-execute` skill
+against the accumulated contract content.*
