@@ -101,72 +101,60 @@ so any orchestrator in any repo can run it without rediscovering it.
 - **OC-9** — An orchestrator can vary reviewer model and reasoning effort
   when it chooses to, via a documented mechanism, without any engine change.
 
-### The reviewer stack
+### The PR evaluator stack
 
-Ironed out at FRAMING by operator direction. The repo already has an agent
-roster, and most of it is **not** review-time — which is what keeps this
-stack from sprawling.
+Ironed out at FRAMING by operator direction. This is the set of agents that
+evaluate a PR, what each one answers, and which gate.
 
-**Three time slots, three different jobs.** An agent belongs to exactly one.
+**Shipping in this epic — two evaluators.** This is what
+market-brief-package runs today, so it is contracted from observation
+rather than designed.
 
-| Slot | Agents | Runs against | Produces |
-|---|---|---|---|
-| **Plan-time** | `sherlock` (design rot, redundancy, verbosity, dead code, test gaps), `gaudi` (architecture smells, interface incoherence), `columbo` (test coverage), `victor` (bead freshness) | a scope or a planned bead tree, *before code exists* | beads |
-| **Review-time** — this stack | **correctness**, **simplicity** | a concrete diff on a live PR | one PR comment each |
-| **Post-deploy** | `rudy` | a running dev deploy | bug beads + report |
+| Evaluator | The one question it answers | Heading | Gates? | Brief owner |
+|---|---|---|---|---|
+| **correctness** | Does this work, and can I make it fail? | `## Adversarial review — cycle N` | **Yes** — owns `adversarial-review` | `ab-xuz` |
+| **simplicity** | Is this the right shape for what the bead asked? | `## Simplicity review` | No — advisory | **this epic** |
 
-**The review-time stack, in full:**
+`simplicity` carries all three halves of the operator's original ask —
+minimality, architectural strategy, and data-structure choice — per OQ-6:
+they do not conflict, and the wrong data structure is usually *why* the code
+is non-minimal.
 
-| Reviewer | Question it answers | Gates? | Owner |
-|---|---|---|---|
-| **correctness** | Does this work, and can I make it fail? | **Yes** — owns `adversarial-review` | `ab-xuz` |
-| **simplicity** | Is this the right shape for what the bead asked? | No — advisory | **this epic** |
+**Two shape questions are open — see OQ-10 and OQ-11.** Under scope 3 both
+are cheap: adding or splitting an evaluator is another brief and another
+`herdr agent start`, not engineering.
 
-Two members. That is the whole stack for now, and the epic ships when both
-are contracted.
+**Admission rule for any future evaluator.** Recorded so the stack does not
+sprawl by accretion:
 
-**Admission rule for any future member.** A review-time reviewer must answer
-a question that is:
-
-1. **Only answerable against a concrete diff** — if it can be answered from
-   a plan or a scope, it belongs to a plan-time agent, which files beads and
-   costs nothing per PR cycle.
-2. **Not already covered** by CI, clippy, the correctness reviewer, or a
-   plan-time agent.
-3. **Unconditional** — it runs every cycle on every PR. A reviewer needing a
-   launch predicate ("only if types changed") is out of scope; the predicate
+1. **Only answerable against a concrete diff.** If a plan or a scope can
+   answer it, it is not a PR evaluator.
+2. **Not already covered** by CI, clippy, or an evaluator already in the
+   stack.
+3. **Unconditional** — runs every cycle on every PR. An evaluator needing a
+   launch predicate ("only if types changed") is out of scope: the predicate
    is control flow the contract cannot express or verify.
+4. **Read-only, one comment.** It reports; it never edits. This excludes
+   `code-simplifier` outright — it applies changes autonomously, which would
+   put a mutating agent in a reviewer workspace on the main checkout.
 
-**Overlaps that must be stated, or someone will ask why we have both:**
+**Named candidates, deferred**, so a later session does not re-derive them:
+`type-design-analyzer` (strongest — PR-scoped by design, rates
+encapsulation and invariant expression, usefulness, and enforcement;
+overlaps `simplicity`'s data-structure half, which is OQ-10),
+`silent-failure-hunter` (good subject, hostile contract: *"call out every
+instance… no matter how minor"* is the inverse of a severity floor),
+`pr-test-analyzer` (overlaps both `correctness` and plan-time test
+coverage), `comment-analyzer` (too narrow to earn a context per cycle).
+`code-reviewer` is not a candidate — `correctness` supersedes it.
 
-- **`sherlock` vs simplicity.** Mandates genuinely overlap — design rot,
-  redundancy, verbosity, dead code. The split is *when* and *what they
-  produce*: sherlock audits a scope during planning and files beads;
-  simplicity reviews an actual diff during review and posts proposals that
-  never become beads unless the operator accepts them. Neither subsumes the
-  other, because sherlock cannot see code that does not exist yet and
-  simplicity cannot see a scope that was never written.
-- **`gaudi` vs OC-3's architecture half.** `gaudi` gates the architectural
-  shape of a *planned epic* before workers dispatch. Simplicity judges the
-  architecture of what was *actually built*. The operator's original ask —
-  catch architectural mistakes in the PR — is squarely review-time. The
-  contract should name `gaudi` as the plan-time counterpart so the two do
-  not duplicate findings.
-- **`columbo` vs any future test reviewer.** `columbo` owns test coverage at
-  plan time. A review-time test reviewer would need to clear admission rule
-  2 against both columbo and the correctness reviewer. `pr-test-analyzer` is
-  the external candidate and does not obviously clear it.
-
-**Named candidates, all deferred.** Recorded so a later session does not
-re-derive them: `type-design-analyzer` (strongest — PR-scoped by design,
-rates encapsulation and invariant expression/usefulness/enforcement; but
-overlaps OC-3's data-structure half), `silent-failure-hunter` (good subject,
-hostile contract — *"call out every instance… no matter how minor"* is the
-inverse of a severity floor), `pr-test-analyzer` (see columbo above),
-`comment-analyzer` (too narrow to earn a context per cycle). Not candidates:
-`code-reviewer` (our correctness reviewer supersedes it) and
-`code-simplifier` (**it edits** — a mutating agent in a reviewer workspace
-on the main checkout).
+*Separate concern, noted once so it is not confused with this stack: the
+plan-time agents (`sherlock`, `gaudi`, `columbo`, `victor`) and the
+post-deploy validator (`rudy`) are not PR evaluators and are out of scope
+here. The only reason they matter is that `sherlock` already covers design
+rot and redundancy at plan time, which is an argument for keeping
+`simplicity`'s brief pointed at the actual diff rather than at the
+codebase at large.*
 
 ### Non-goals
 
@@ -245,6 +233,21 @@ epic blocked on four beads. Two were engine-side and no longer apply.
   metric above.
 - **OQ-8 — should `ab-5lw` be folded into `ab-xuz` and closed?** Open;
   planner recommends yes.
+- **OQ-10 — does `simplicity` keep the data-structure/type mandate, or does
+  it split into a second advisory evaluator?** Open. OQ-6 resolved that the
+  three halves do not conflict, which argues for one. Against:
+  `type-design-analyzer` is a PR-scoped agent with a four-axis rating shape
+  that is more specific than anything `simplicity`'s brief will say about
+  types, and field evidence for `simplicity` is 4 runs from one day — thin
+  enough that the bundle is unproven rather than proven. Planner
+  recommendation: **keep one**, ship it, and split only on observation.
+- **OQ-11 — does `correctness` split into two targeted evaluators?** Open,
+  and reopened by scope 3. Under the retired engine framing this needed a
+  model/kind seam and was deferred as a measured experiment. Under
+  orchestrator control it needs neither — it is two briefs and two launches.
+  The operator's original framing was "two faster, less expensive models
+  with more targeted instructions." Still no measurement exists, but the
+  cost of trying is now a brief rather than an epic.
 - **OQ-9 — does the contract belong only in the skill, or also in an ADR?**
   Open. The skill travels and is where an orchestrator reads; an ADR is
   binding and survives skill rewrites. Deferred to RECORD, which is
