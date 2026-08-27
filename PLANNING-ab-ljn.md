@@ -183,5 +183,36 @@ block alone does not stop a child from appearing ready.
 - **OQ-4 — Separate agent or wider brief.** RESOLVED 2026-08-27 at the
   FRAMING gate: two separate agents. Rationale recorded under the operator
   decisions at the top of this file.
+- **OQ-5 — Does TD-5 as written encode a known anti-pattern?** Raised
+  2026-08-27 by operator-supplied prior art, after FRAMING was approved.
+  Anthropic's official `code-simplifier` agent
+  (`~/.claude/plugins/marketplaces/claude-plugins-official/plugins/code-simplifier/agents/code-simplifier.md`,
+  section 4 "Maintain Balance") explicitly warns against prioritising
+  "fewer lines" over readability — naming nested ternaries and dense
+  one-liners — and instructs choosing clarity over brevity. TD-5 currently
+  says the reviewer "almost never proposes work that increases line count."
+  These are in tension. The question is whether TD-5 should be reworded to
+  target *unnecessary code* rather than *line count*, which would preserve
+  the operator's intent while avoiding the documented failure mode.
+  Deferred to the RESEARCH gate, where a concrete recommendation is due.
+  **TD-5 stands as approved until the operator amends it.**
+
+## RESEARCH inputs supplied by the operator
+
+- Anthropic's official `code-simplifier` agent (path above). A
+  byte-identical body also ships in the same marketplace's
+  `pr-review-toolkit` plugin, differing only in frontmatter examples.
+  Assessed as prior art for **posture and guardrails only**: it is an
+  *editing* agent that applies changes autonomously, carries no evidence
+  bar, threat model, severity grading, verdict grammar, or probes
+  requirement, and its standards section is JS/TS/React-specific. It is not
+  a template for a read-only adversarial reviewer.
+- The same `pr-review-toolkit` plugin ships five sibling agents —
+  `code-reviewer`, `comment-analyzer`, `pr-test-analyzer`,
+  `silent-failure-hunter`, and `type-design-analyzer`. The last is closer to
+  half of this epic's mandate than the simplifier is: it reviews types
+  introduced by a PR and rates encapsulation, invariant expression,
+  usefulness, and enforcement — the "optimal data structures" half of the
+  ask. RESEARCH is tasked with assessing all of them.
 
 *Status: FRAMING approved 2026-08-27. RESEARCH next.*
