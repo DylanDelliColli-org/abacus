@@ -846,8 +846,128 @@ corpus-managed (only `AGENTS.md`, `CONSTRAINTS.md`, `NORTH-STAR.md`,
 it lands in `docs/adr/` and must pass the design-document review gate
 (bloat + spec validation) per the RECORD rules.
 
-*RESEARCH complete. ARCHITECTURE next: lock the mode split, the skill's new
-section layout, the brief template's full text, and the ADR scope.*
+*RESEARCH approved 2026-08-27.* Operator ruling on the mode split, with a
+refinement that becomes an architectural invariant: **engine mode is the
+destination, manual mode is the permanent first-class fallback** — an
+engine-mode bug halts execution entirely, while in manual mode it is a
+minor setback. Manual mode is never retired. (Consistent with the standing
+posture that recovery paths are first-class on this host.)
+
+---
+
+## ARCHITECTURE
+
+Producer substitution recorded: inline, same rationale as RESEARCH — the
+decisions below were forged in the gated conversation and peer discussion
+above; this section locks them.
+
+### A1 — The mode model and the equivalence invariant
+
+Two modes, one contract:
+
+- **Engine mode** (destination): the engine launches, tracks, and reaps
+  evaluators; §1's hand-performing ban stands verbatim.
+- **Manual mode** (permanent fallback): operator-declared, per repo or per
+  session, never inferred by the orchestrator. The orchestrator launches
+  evaluators by the written procedure. Declaring it is one sentence from
+  the operator; the skill instructs the orchestrator to ask when ambiguous.
+
+**The invariant that makes fallback real: mode equivalence at the comment
+stream.** Both modes must produce byte-compatible PR artifacts — same
+headings, same verdict grammar, same adjudication grammar, same cycle
+semantics — so that switching modes MID-ARC strands nothing: an engine-mode
+bug at cycle 3 lets the operator declare manual mode and cycle 4 continues
+on the same PR, same ledger, same counting. A manual-mode PR is
+indistinguishable downstream from an engine-mode PR.
+
+Proof this holds for the advisory evaluator today: the engine's
+`review_comment_facts` counts only headings matching
+`## Adversarial review — cycle ` — `## Simplicity review` does not match,
+so simplicity comments are **engine-inert even when the engine runs**. The
+advisory evaluator is mode-independent by construction; only the
+correctness evaluator's artifacts carry cross-mode obligations, and those
+are already byte-specified (§4 grammar, D4 heading).
+
+### A2 — Skill layout (locked)
+
+`abacus-execute` gains, in order: §1 rewritten with the mode model; a
+manual-mode operating loop beside §2; a **manual launch procedure** section
+(worktree per evaluator, 12-14s pane readiness wait, `agent start` with
+optional `-- --model <m> -c model_reasoning_effort=<e>`, prompt with
+`--wait --until working` as the engagement proof, backgrounded terminal
+waits plus the bounded fallback probe for the known wait-hang); a
+**heading registry** section (canonical headings, the collision rule stated
+with its consequence); §4 additions (the simplicity labelled-paragraph
+convention; the adjudication transaction — completeness statement, atomic
+concern disposition); a **convergence** section between §4 and §5 (per-PR
+class ledger derived from verdict + adjudication comments; second-instance
+shared-seam rule; third-instance operator stop; warm-author refresh with
+context retirement at the third instance); §5 addition (simplicity relay:
+`## Simplicity review` as first body line, no cycle number); a **hazards**
+section (A filter-trap with the remedy ladder and fresh-pane recovery; C
+author-vs-reviewer gates; D reviewer-filed beads fold into rework; E
+verify-the-blocker-before-accepting; B and F are pointers — B lives in
+`ab-xuz` amendment 10, F is OC-12). §§3, 7, 8, 9, 10 unchanged.
+
+### A3 — The simplicity brief: required clauses locked, prose deferred
+
+The template ships as an asset file beside the skill
+(`.claude/skills/abacus-execute/simplicity-brief.md`). ARCHITECTURE locks
+its **required clauses** — the implementation bead writes the prose with
+these as acceptance criteria:
+
+1. Role and posture: read-only; exactly one PR comment; `jot` capture
+   permitted for pre-existing findings (with `--file`/`--symptom`/`--repro`)
+   and explicitly not bead-tracked work.
+2. Heading: `## Simplicity review`, first body line, no cycle number, no
+   verdict line.
+3. Question: is this the right shape for what the bead asked — unnecessary
+   code and unnecessary **concepts** (OC-5 wording verbatim, including the
+   adds-lines-removes-a-concept clause and the
+   simplification-requiring-a-test-change red flag).
+4. Proposal shape: (a) what is removed, (b) which guarantee survives and
+   how it checked, (c) rough cost; report ends with considered-and-rejected
+   and why. ("Cost of cutting" / "Revive when" — the repo's own ADR
+   bloat-review idiom.)
+5. The narrow test clause: changed or behaviour-implicated tests only;
+   unit is behaviours and assertions — duplicate behavioural proof,
+   assertions no longer pinning the named contract, coverage lost through
+   folding, deletion, or thinning. Not a suite inventory.
+6. Reduction-PR questions: did it overshoot; what adjacent bloat remains.
+   Restoration is a valid finding.
+7. Volume: significance threshold; ranked most-significant-first; no
+   numeric cap; "reporting nothing is a valid and expected outcome."
+8. Exclusions: generated code, vendored deps, language idioms, sub-5-line
+   snippets — and never propose removing code the bead's acceptance
+   criteria require.
+9. Framing: correctness-invariant vocabulary; no attack verbs.
+
+### A4 — The ADR (RECORD's deliverable, scope locked)
+
+`docs/adr/0006-<slug>.md`, covering the binding decisions only: the
+two-evaluator convention and admission rules (both routes); single-gate
+authority; the heading-collision rule and its consequence; the
+adjudication binding (labelled paragraph, transaction); the mode model
+with fallback semantics and the equivalence invariant; the convergence
+controls; the shadow-trial promotion path. It **relates to ADR 0005
+without amending it**: manual mode operates outside D2/D3/D5's engine
+loop, and the simplicity heading is invisible to D4's parser by
+construction. Engine-mode adoption of the second evaluator (making the
+engine launch it) is explicitly future work with its own ADR amendment —
+the scope-2 RESEARCH at `fb2c106` is its starting inventory. Must pass the
+design-document review gate (bloat + spec validation).
+
+### A5 — What ARCHITECTURE explicitly does not do
+
+No engine changes (decision 8). No per-repo files (routed to init). No new
+instrumentation. `docs/lifecycle.md`'s engine-centric "launch reviewer"
+phrasing gets a one-line mode note in the implementation bead touching
+docs, not a rewrite.
+
+*ARCHITECTURE drafted, awaiting operator gate. TEST-STRATEGY next — small
+by construction: the deliverables are a skill, a template, and an ADR;
+the test surface is docs-doctor, the ADR review gate, and the acceptance
+checklists above.*
 
 ---
 
