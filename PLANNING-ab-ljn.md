@@ -747,6 +747,108 @@ walk into it.
 
 ---
 
+## Per-repo adoption surface — converged inventory, 2026-08-27
+
+Operator question: what other rulesets or documentation should abacus-using
+repos adopt to use review cycles more efficiently? Planner and Codex peer
+produced independent inventories, then converged. Verified corrections to
+the shared premise first: mbp's NORTH-STAR.md **does** carry a ranked Test
+values table (values only — "binding numeric caps live in planning
+documents, never here"), and internal-analytics **does** declare a 30s
+budget (`AGENTS.md:39` → `docs/testing.md`). The earlier claim that mbp
+declares no test standard was wrong on the values half.
+
+### The ownership split (strict, and itself the main finding)
+
+- **AGENTS.md** owns facts workers must act on before opening or updating a
+  PR: declared review base, same-PR rework, `-v2` scope, path gates, links.
+- **`docs/review-contract.md`** (per repo) owns declarations reviewers and
+  orchestrators consume: reviewer verification policy, environment-issue
+  ledger, test-budget references, extra evaluator membership.
+- **`abacus-execute`** (travels with abacus) owns portable choreography:
+  class memory, convergence rules, author refresh, preflight, comment
+  grammar, completeness, atomic concern filing.
+
+Rule of thumb: **repos declare facts; abacus owns procedure.** Procedure
+living per-repo is what drifted (`-v2` incident).
+
+### The inventory, ranked by cycles bought back
+
+1. **Per-PR convergence ledger** (abacus-execute; ~15-20 lines + template).
+   Carries forward by finding CLASS: class, first cycle, disposition,
+   regression probe, enforcement seam, follow-up bead, head-recheck status.
+   The next brief is GENERATED from the ledger; a finding re-blocks only if
+   its class is new or a recorded regression is demonstrably live again.
+   Second instance of a class → guard moves to the narrowest shared seam and
+   a sibling is tested. Third → stop, operator rules on the design. Source
+   of truth is the PR's verdict + adjudication comments, NOT a repo-wide
+   file — an old adjudication must never immunise a genuinely new
+   regression. Addresses PR64 (6 cycles), PR65 (4), the 22-cycle arc.
+2. **PR identity & continuity contract** (AGENTS.md ~10 lines + preflight in
+   abacus-execute). Orchestrator verifies base, head SHA, lane branch, and
+   diff-vs-footprint credibility BEFORE spending a review cycle (an 84-file
+   diff on a 10-file bead stops preflight, not cycle 1). Worker side:
+   declared review base by name; `--base` always supplied; rework adds
+   commits to the same lane branch; `-v2` reserved for genuine history
+   rewrites, closing and cross-linking the old PR. No mandatory rebase —
+   base-correctness and diff-credibility only.
+3. **Warm-author refresh protocol** (abacus-execute). Every rework prompt
+   regenerated from durable state — current head, base, accepted findings,
+   class ledger, exact failing probes — never "address cycle N." At the
+   third instance of a class, also retire the conversational context: fresh
+   author agent, same worktree, same branch, same PR. Rejected: a fixed
+   recycle-after-N rule — 12 is where harm was observed, not evidence 11 is
+   safe; the class checkpoint is the trigger.
+4. **Reviewer verification budget** (`docs/review-contract.md`, linking the
+   AGENTS.md gate table). Reviewers start from probes and import/provenance;
+   run only the path-selected gate a finding needs; consume exact-head CI as
+   the ordinary full-suite evidence; full reruns only when the claimed
+   property is suite-wide or CI is absent/ambiguous. Default, not
+   prohibition. Would have saved the measured 15-25 min of zero-finding
+   reruns.
+5. **Bounded known-environment-issues ledger** (`docs/testing.md` section
+   until it outgrows one). Each entry: exact failing command + signature,
+   environment, disambiguation probe, governing bead, last-verified date and
+   expiry. Match by signature only — "this area is flaky" is not an
+   exemption; new signatures remain findings.
+6. **Adjudication transaction** (abacus-execute, ~10 lines). No adjudication
+   without: reviewed head, surfaces examined, material exclusions, and the
+   completeness statement. Every accepted concern gets its durable
+   disposition IN the same operation — folded into rework, a follow-up bead
+   (ID in the adjudication), or explicit rejection. "File it later" is how
+   concerns resurfaced as next-cycle blockers.
+7. **Test-economy declaration with a measurement boundary** (values in
+   NORTH-STAR, numeric caps + what-is-measured in `docs/testing.md`,
+   enforcement in CI or a stable local gate; AGENTS.md links only). mbp is
+   half-done (values, no caps); ia is further (30s budget). Ranked last:
+   compounds forever, but would not have prevented the class-memory or
+   branch-identity losses. Routes through `ab-testvalues-consumption-d01`.
+
+### Explicit rejections, agreed by both parties
+
+- **No hard maximum cycle count** — a cap merges unresolved work or
+  abandons it arbitrarily; class escalation attacks the cause.
+- **No repo-wide adjudicated-classes file** — class disposition is specific
+  to a PR, head, implementation, and probe.
+- **No unqualified flake allowlist** — without signatures and expiry it
+  eventually hides a real regression.
+- **No per-repo heading registry** — heading syntax is abacus protocol; N
+  per-repo copies is N sources of drift. A repo declares only extra
+  evaluator membership.
+- **No per-repo filter-vocabulary lists** — filter-safe framing is an
+  orchestration hazard; the positive rule (state checks as correctness
+  invariants, mechanical inputs and outputs) lives in the travelling skill
+  and templates.
+
+**If only one lands: item 1 plus its second-instance shared-seam rule** —
+the only proposal with repeated evidence that it turns several cycles into
+one rather than making each cycle somewhat cheaper.
+
+*Undecided at this point: whether these become contract content inside this
+epic's DECOMPOSITION, separate beads, or both. Operator decision pending.*
+
+---
+
 ## Superseded: engine RESEARCH
 
 A full engine audit was produced at `fb2c106` and is **superseded by
