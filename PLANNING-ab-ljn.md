@@ -1059,7 +1059,65 @@ lineage, per the design-document hook:**
 Commits: draft `b5bcadc`, bloat dispositions `ceaa3bb`, spec fixes
 `bd4f463`.
 
-*RECORD complete, awaiting operator gate. DECOMPOSITION last.*
+*RECORD approved 2026-08-27.*
+
+---
+
+## DECOMPOSITION
+
+Three children under `ab-ljn`, derived from ADR 0006 (not from
+conversation memory). Footprints re-derived from the locked architecture;
+the scope-2 provisional bundles were engine-shaped and are all DROPPED —
+no engine code is touched, so none survived re-derivation.
+
+| Child | Title | Footprint | Needs |
+|---|---|---|---|
+| `ab-ljn.1` (P1) | Implement the ADR 0006 orchestrator contract: two-mode skill rewrite, simplicity brief template, lifecycle mode note | `.claude/skills/abacus-execute/SKILL.md`, `.claude/skills/abacus-execute/simplicity-brief.md` (new), `docs/lifecycle.md` | `ab-xuz` |
+| `ab-ljn.2` (P2) | ADR 0006 D3 pinning test | `src/review.rs` | `ab-ljn.1` |
+| `ab-ljn.3` (P2, seat:operator) | ADR 0006 D8 shadow trial | none (tracker + PR comments) | `ab-ljn.1` |
+
+**Story traceability:** OC-1/OC-2/OC-9 (launch procedure, gotchas, model
+variation) → `.1` skill sections 2-3; OC-3/OC-4/OC-5 + the test clause →
+`.1` template; OC-6 (heading rule) → `.1` section 4 + `.2` (the pinning
+test); OC-7/OC-12 (adjudication binding, transaction) → `.1` section 5;
+OC-8 (hazards) → `.1` section 8; OC-10/OC-11 (convergence, author
+refresh) → `.1` section 6; D8 trial → `.3`. Epic success metric → epic
+Success Criteria, measured at first real use after `.1`.
+
+**Grouping:** `.1` bundles the three doc surfaces deliberately — the
+template is referenced by the skill and the two must land coherently;
+`docs/lifecycle.md` is one line. `.2` is a separate lane (different file
+family, cargo verification, and `src/review.rs` must not be touched by a
+docs lane). `.3` is operator-paced process work. No shared-footprint
+group tags needed: the three footprints are disjoint.
+
+**Dependency wiring** (requirement language): `.1` needs `ab-xuz` — both
+edit the same SKILL.md (ab-xuz adds its manual-reviewer-brief section)
+and the binding must not contradict the correctness contract. `.2` needs
+`.1` (pins the heading the template canonicalizes). `.3` needs `.1` (the
+shipped template is the instrument under trial). Verified via
+`br blocked`: all three children and the epic blocked; `br ready` shows
+no `ab-ljn` items — correct, the tree opens when `ab-xuz` closes.
+Parent-child edges are type `parent-child` and do not gate readiness
+(verified on `ab-ljn.1`'s dependency list).
+
+**Checks run:** `br lint` clean for the new tree (remaining warnings are
+the pre-existing `ab-stk`/`ab-645` ones; a lint/field decoupling quirk
+found on the way was jotted). Coverage-loss tripwires: `.2` is purely
+additive (folds nothing, deletes nothing, thins nothing); `.1` and `.3`
+are [no-test] docs/process beads with grep-anchored checklists — `.1`'s
+checklist includes the byte-identical §4 grammar diff, which is the
+anti-thinning check for the adjudication contract. Self-negating sweep
+check: `.1`'s only negative grep (filter-trigger words) is scoped to the
+template and new skill sections, not to test literals — no acceptance
+clause orders a repo-wide removal.
+
+**Freshness review:** victor-type subagent dispatched against the three
+beads at HEAD, planning-record excluded, verdict recorded below when it
+returns.
+
+*DECOMPOSITION drafted; awaiting the freshness verdict, then the final
+operator approval and handoff.*
 
 ---
 
