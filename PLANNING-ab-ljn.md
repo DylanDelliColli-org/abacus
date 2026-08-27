@@ -307,6 +307,62 @@ epic blocked on four beads. Two were engine-side and no longer apply.
 
   On the structural test, a test evaluator therefore **passes**, and the
   earlier dismissal was wrong.
+
+  **Codex peer discussion, 2026-08-27 (`w84:p3`). Joint recommendation:
+  three evaluators now.** Points of agreement and the one correction:
+
+  - **The admission test needed widening, and Codex's version is better.**
+    Structural suppression is *sufficient* for admission but too strict as
+    the *only* route: "could another agent theoretically report this" is not
+    "will its contract reliably direct enough attention there." Proposed
+    second route: **demonstrated attention dilution** — repeated misses,
+    recurring operator pain, or a focused trial producing material findings
+    the broad evaluator routinely overlooks. Empirical, not asserted, so
+    dilution does not become permission to split by subject area.
+  - **Argument 3 above is wrong and is withdrawn.** Simplicity is *already*
+    two-sided: every proposal must preserve a checked guarantee, the
+    rejected list records tempting cuts that would not, and the restoration
+    case proves it can recommend adding something back. Cut-and-protect
+    therefore does **not** distinguish the roles. Arguments 1, 2, and 4
+    stand and are what carry the case.
+  - **Sharper framing than the planner's:** test review operates over a
+    **behaviour-to-evidence relationship**, not over code shape. It asks
+    whether each case proves a distinct behaviour, whether each assertion is
+    load-bearing, whether a fake still pins the exact contract, and whether
+    production behaviour lost its proof through deletion, folding, or
+    assertion thinning.
+  - **Scope note with a real cost:** the test evaluator must examine tests
+    **even when no test file changed**, because a production change can make
+    existing evidence incomplete or meaningless. It reads the production
+    diff *plus* the implicated existing suite — more context than the other
+    two carry.
+  - **Simplicity narrows:** its test responsibility drops to incidental
+    observation rather than test-suite design as part of its required sweep.
+    Resolves the overlap cleanly.
+  - **Redundancy and coverage loss are reported separately** by the test
+    evaluator — they are opposite findings and folding them invites the
+    adjudicator to trade one against the other silently.
+
+  **The ceiling, and what sets it.**
+
+  - **Exactly one gating evaluator.** Two independent gates would duplicate
+    severity decisions and increase cycle depth even when launches are
+    parallel. A second gate needs a genuinely separate *authority boundary*,
+    not merely specialised expertise — and none has been shown.
+  - **Advisory capacity has a softer ceiling but is not free.** Parallel
+    launch removes wall-clock cost, not token cost, comment-reading cost,
+    adjudication cost, or pressure to manufacture findings. **Three total is
+    the resting point; four is an experimental ceiling requiring measured
+    justification.** Six would be "a taxonomy, not a review design" — the
+    operator would receive overlapping comments about one diff.
+  - **Performance is the only credible fourth mode**, and both parties agree
+    **not now**: without evidence of recurring performance escapes it would
+    spend most cycles proving irrelevance. Trial it as advisory with
+    explicit baselines and budgets if such regressions become observed.
+  - No other unconditional evaluator passes either route today. Types, error
+    handling, security, API compatibility, requirements fidelity,
+    observability, and documentation all remain reachable through
+    correctness or simplicity absent field evidence of systematic misses.
 - **OQ-9 — does the contract belong only in the skill, or also in an ADR?**
   Open. The skill travels and is where an orchestrator reads; an ADR is
   binding and survives skill rewrites. Deferred to RECORD, which is
