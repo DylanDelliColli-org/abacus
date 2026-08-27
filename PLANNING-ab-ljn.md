@@ -483,5 +483,198 @@ close; 2 third; 3 last.
 
 Both await operator-invoked `/jot-review`.
 
-*Status: RESEARCH delivered, awaiting operator gate. Three seam questions
-outstanding with the producer. ARCHITECTURE not started.*
+---
+
+## FIELD EVIDENCE — market-brief-package, 2026-08-27
+
+Source: the resident market-brief-package session, answering directly about
+what it ran today. This is the highest-authority input in the record: it is
+observation of a working two-reviewer flow, not design reasoning. Where it
+generalises from few data points it says so, and those caveats are preserved.
+
+### It settles the engine question
+
+`abacus run` once at session start (dispatched one bead), `abacus drain`
+once (opened three spurious lanes and died on `agent_name_taken` — the
+`ab-645` defect). **Since then 100% hand-orchestrated. The engine has not
+read a PR all session.**
+
+Consequence for **S1**: moot in market-brief-package, because nothing parses
+those PRs. But the session's own words: *"this was luck, not design — I
+picked `## Simplicity review` because it is a different role, before I knew
+`heading_cycle` prefix-matches and ignores trailing text… your hazard is
+real and worth writing into the contract explicitly, because
+`## Adversarial review — cycle 3 — tech debt` is exactly the heading someone
+would naturally choose."* S1 becomes a **hard naming rule in the contract**
+rather than an engine fix.
+
+### It corrects RESEARCH on parallelism
+
+RESEARCH concluded the launch path serialises. True of the *engine*, but the
+manual flow already achieves genuine concurrency, and the difference is one
+flag:
+
+```
+herdr agent prompt <name> "<brief>" --wait --until working
+```
+
+`--until working` returns as soon as the prompt is **engaged**, not when the
+turn finishes. Practice: create both worktrees, start both agents, prompt
+both with `--until working`, then background two separate
+`herdr agent wait … --until idle --until done --until blocked`. **Two
+reviewers cost roughly the wall-clock of one.**
+
+This also shrinks the eventual engine fix: `prompt_agent` (`src/lane.rs:389`)
+blocks because it waits on default settle states, not because the recovery
+machine is unsplittable. Out of scope here; recorded so the future epic
+starts from it.
+
+Gotcha, measured: `agent_pane_busy` ("target pane is not an available
+shell") for **10-20 seconds** after workspace creation, longer under load.
+Sleep 12-14s. An earlier 2-3s figure was wrong. And `--wait --until working`
+is what proves the brief actually landed — without it you get the paste
+race. *Trust `agent_status` and the tracker, never a pane read.*
+
+### The load-bearing finding: a simplicity reviewer is not a reworded correctness reviewer
+
+Verbatim: *"If you give it a severity floor it finds nothing, because 'this
+is more complex than the problem needs' can never clear an executed-failure
+bar. My correctness briefs had been actively suppressing exactly those
+findings."*
+
+**This inverts an assumption carried through FRAMING and RESEARCH** — that
+the tech-debt reviewer inherits the shared evidence bar. It must not. The
+two briefs are deliberately opposite:
+
+| | Correctness | Simplicity |
+|---|---|---|
+| Output | Blockers | **Proposals, never blockers** |
+| Severity floor | Yes | **None** |
+| Executed failure | Required for a blocker | **Not required; speculation explicitly welcome** |
+| Threat model | Every finding | n/a |
+| Verdict | REFUTED / NOT REFUTED | **No verdict line** |
+| Gates merge | Yes | No |
+
+Proven simplicity-proposal shape — each proposal states **(a)** what is
+removed, **(b)** which guarantee survives and *how it checked*, **(c)** rough
+cost; and the report **ends with what it considered and REJECTED, and why**.
+The session rates the rejected-list as valuable as the proposals: *"twice it
+declined a tempting simplification because the guarantee mattered more…
+that is the signal that the role is calibrated rather than cutting to look
+productive."*
+
+### Headings and adjudication, as actually used
+
+- correctness → `## Adversarial review — cycle N` (em dash, integer, nothing after)
+- simplicity → `## Simplicity review` (**no cycle number, different first token**)
+- adjudication → `## Adjudication — cycle N`
+
+**OQ-3 is answered by practice.** Simplicity gets no verdict and no cycle
+number. It is adjudicated *inside* the correctness adjudication comment as a
+labelled paragraph — typically "The parallel simplicity review is
+adjudicated separately and does not gate this merge; its proposals are filed
+as `<bead ids>`." Rationale: *"correctness governs mergeability, so the
+grammar stays attached to the thing that gates. If you make simplicity emit
+an adjudicatable verdict you have given it a veto you probably do not want."*
+
+### OQ-5 is answered emphatically, by a case that could not be clearer
+
+On a PR that was **itself a reduction**, the simplicity reviewer found where
+the reduction had gone **too far** — a consolidated test whose fake accepted
+two contracts and no longer pinned the exact call. **A restoration, reported
+as a finding.** A reviewer optimising line count could not produce that.
+
+Derived rule for reduction PRs: ask two questions — *did it overshoot*, and
+*what adjacent bloat remains*.
+
+Results in 4 runs (all from one day — discount accordingly): zero noise; two
+structural insights correctness never surfaced (per-project `Cell` fan-out
+replaced by sufficient statistics, 166 → ~18; one interception table driving
+both runtime patching and its audit, deleting a bespoke AST recogniser);
+plus genuinely dead constants and a dormant branch.
+
+### On cycle-depth spirals — adding a reviewer is not the cause
+
+*"Adding a reviewer does NOT cause the spiral; the spiral is caused by
+briefs that reward finding something plus no class-level memory."* Three
+controls, all exercised today:
+
+1. Enumerate already-adjudicated finding **classes** in each brief; a new
+   finding blocks only if it is a genuinely unadjudicated class, or shows an
+   adjudicated one still live.
+2. On the **second** instance of a class, refuse another point patch — the
+   guard moves to the narrowest choke point covering the class.
+3. On the **third**, stop and put the design question to the operator
+   instead of opening another cycle. Hit twice today; stopped both times;
+   both became operator decisions and both were right.
+
+Also measured: reviewer full-suite reruns produced **zero** findings over
+five cycles at 3-5 minutes each. Cut to focused suite plus import provenance
+plus the reviewer's own probes: **wall-clock down ~40%, findings up.**
+
+### Model selection — mechanism confirmed, untested
+
+All reviewers today: `--kind codex`, `gpt-5.6-sol` at high reasoning (the
+account default in `~/.codex/config.toml`). Never varied, so **no data on
+the split question.** But the mechanism is confirmed to exist:
+
+```
+herdr agent start <name> --kind codex --pane <id> -- --model <m> -c model_reasoning_effort=<e>
+```
+
+herdr forwards trailing args after `--`; codex takes `-m/--model` and `-c`.
+**Untested.** This is the answer to the seam question the epic expanded to
+chase — and it needs no engine change at all when the orchestrator launches.
+
+### Six hazards the contract must carry
+
+**A. The OpenAI cyber-filter trap — six occurrences in one day.** Attack-verb
+framing wedges a codex reviewer *mid-run with no verdict posted*. Trigger
+words: *defeat, attack, bypass, circumvent, exploit, forge, hunt,
+pathological*. **Not limited to security reviews** — a pure render-budget
+robustness brief tripped it. Remedy ladder, in the order that actually
+worked: state checks as correctness **invariants** ("for every composition
+the finalized response satisfies these four properties") and use
+"exercise"; if the subject is itself auth or credentials, go further and
+describe checks **mechanically with no domain vocabulary at all** ("a
+handler decodes a body without an `errors=` argument; confirm malformed
+bytes yield 4xx not 500"). That last framing got an auth review through
+after two failures *and produced the sharpest finding of the three*.
+**Re-prompting the same wedged pane does not reliably recover — close the
+workspace, fresh pane.**
+
+**B. Goal language is load-bearing.** "Attempt to refute" rewards finding
+something. Current wording: *"Render an honest verdict… Verdict REFUTED only
+if you find at least one genuinely serious defect. A clean NOT REFUTED after
+a real sweep is a successful review, not a failed one; never escalate a
+minor issue to justify the effort."* Same rigour, and filter-safer.
+Supersedes `ab-5lw`'s narrower clause — see the overlap note below.
+
+**C. Author gates are not reviewer gates.** Trimming reviewer gates is
+correct; copying that trim into an *author* brief cost a red CI on an
+already-reviewed PR. The two rules must be visibly separate in the contract.
+
+**D. Reviewers file beads** under the blocking-defect carve-out. Fold them
+into the rework bead so there is one contract, unless the finding genuinely
+outlives the PR.
+
+**E. Verify the blocker yourself before accepting.** Reviewers have been
+structurally right and detail-wrong — twice today a mechanism was correct
+but a cited line or provenance claim needed correcting in the adjudication.
+
+**F. File accepted concerns as beads in the same breath**, or they become
+the next cycle's blockers.
+
+### Overlap with `ab-xuz` must be resolved, not duplicated
+
+`ab-xuz` (nine amendments to the canonical reviewer contract) and this
+evidence come from the same operator's field practice weeks apart. Items B,
+the class-memory controls, the focused-gate scoping, the security framing,
+and guard relocation all appear in both. **DECOMPOSITION must not author two
+competing contracts.** Recommended: `ab-xuz` remains the single owner of the
+*correctness* brief; this epic owns the *simplicity* brief, the orchestrator
+launch procedure, and the adjudication convention that binds them.
+
+*Status: RESEARCH delivered and corrected by field evidence. FRAMING needs a
+third rewrite — the epic is now an orchestrator-contract change, not engine
+work. Awaiting operator decision on scope and tier.*
