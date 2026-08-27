@@ -363,6 +363,91 @@ epic blocked on four beads. Two were engine-side and no longer apply.
     handling, security, API compatibility, requirements fidelity,
     observability, and documentation all remain reachable through
     correctness or simplicity absent field evidence of systematic misses.
+
+  **Round 2, same discussion: the operator was not sold, the planner argued
+  against his own position, and Codex CHANGED ITS ANSWER to two.** The
+  arguments that moved it, in its stated order of weight:
+
+  1. **Test bloat may be an authoring failure, not a review gap.** If the
+     bead's spec requests forty cases, review is too late; if the worker
+     pads a five-behaviour spec into forty cases, that is an author-contract
+     failure. A reviewer can catch either, but it is the most expensive
+     recurring instrument for the job.
+  2. **Evidence asymmetry.** Simplicity was admitted on repeated live use,
+     named unique findings, and a demonstrated contract exclusion. Test
+     review has one operator observation plus reasoning — and the simplicity
+     field record *already contains one test-specific success* (the
+     consolidated fake that no longer pinned the exact call), proving
+     test-quality findings are not inherently unsayable in that role.
+  3. **The budget claim verified, with a nuance.** The 30s budget is
+     enforced *procedurally* at plan time (TEST-STRATEGY prices against it)
+     but by no executable gate: `.github/workflows/ci.yml:37` runs plain
+     `cargo test`, nothing fails on overrun. Also: budget and focus are
+     related but distinct — forty fast redundant cases fit comfortably under
+     30s. The budget controls aggregate runtime; only behaviour-level
+     specs and tripwires control semantic bloat.
+
+  **Codex's revised position: two evaluators now, plus a bounded
+  test-quality clause in simplicity, plus a falsifiable trial** — because
+  "the simplicity reviewer found some test issues" is not an adequacy
+  criterion; a diluted reviewer will almost always find *something*. The
+  trial design:
+
+  - Paired retrospective over 5-8 representative PRs, including known
+    bloated ones.
+  - Simplicity gets a **narrow test clause** whose unit is *behaviours and
+    assertions*, not concepts: duplicate behavioural proof, assertions that
+    no longer pin the named contract, coverage lost through folding,
+    deletion, or thinning. Explicitly NOT a suite inventory or redesign.
+  - A one-off, non-stack **shadow test specialist** inspects the same
+    historical diffs as the benchmark.
+  - Independently classify each observed excess as spec-originated vs
+    worker-originated.
+  - Also watch whether the clause crowds out simplicity's production-shape
+    findings — that crowding is itself evidence for splitting.
+
+  **Promotion threshold:** two independent PRs where the shadow specialist
+  finds material test defects the explicitly-instructed simplicity reviewer
+  misses, especially same-class misses. Conversely, if bloat consistently
+  traces to over-prescriptive beads or author behaviour, fix those contracts
+  and do not promote.
+
+  **Corrections to the round-2 record, verified by the planner:**
+
+  - Codex reported "no `columbo --cost-audit` exists" and jotted it as a
+    stale capability claim. **Partially wrong:** the mode exists at the user
+    level — `~/.claude/skills/columbo/SKILL.md:13, :59, :146` define
+    `--cost-audit` with a prefilter script beside it. Codex searched only
+    the abacus repo. What IS true: nothing wires it into this repo's
+    planning flow or CI. The jot needs that correction at curation.
+  - `ab-testvalues-consumption-d01` (open, P2, seat:operator) already owns
+    the plan-time consumption side: per-class caps, budget arithmetic
+    against both the global budget and declared per-class caps, standing
+    cost audit. It explicitly does not add a CI gate. Any budget-enforcement
+    work this epic spawns must route through or depend on that bead, not
+    duplicate it.
+
+  **Live measurement, taken during this discussion — the operator pointed at
+  `market-brief-package`'s MCP layer as "maybe not bloated, but expensive":**
+
+  - `headless_intelligence/tests/mcp_remote/`: 17 files, 9,815 test lines
+    over 5,087 source lines (1.93:1), 196 test functions, 262 collected
+    cases. Full run: **52.78s**.
+  - **The cost is concentrated, not diffuse:** `test_runtime_dependencies.py`
+    alone carries ~41s of the 52.78 — one cwd-variance dependency-graph
+    probe at **24.43s**, one reachable-source probe at 9.39s, four more at
+    2-3s. The other ~190 cases finish in roughly 10s combined.
+  - Reading: this is NOT the forty-near-identical-cases pattern. It is a
+    small number of expensive, high-value integration probes dominating an
+    otherwise fast suite. The instrument that addresses it is **cost-vs-
+    unique-coverage judgement** (is one 24s probe worth 46% of the suite
+    wall-clock?) — exactly `columbo --cost-audit`'s question, and per-class
+    budget arithmetic — `ab-testvalues-consumption-d01`'s question. A
+    review-time bloat detector would find little to cut here.
+  - Also: mbp declares **no suite budget anywhere** (no AGENTS.md or
+    .claude/ mention). The repo where cost is felt has no standard to
+    review against — a per-repo declaration gap, which is init/onboarding
+    territory, not evaluator territory.
 - **OQ-9 — does the contract belong only in the skill, or also in an ADR?**
   Open. The skill travels and is where an orchestrator reads; an ADR is
   binding and survives skill rewrites. Deferred to RECORD, which is
