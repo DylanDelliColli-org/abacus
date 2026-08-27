@@ -120,9 +120,38 @@ minimality, architectural strategy, and data-structure choice — per OQ-6:
 they do not conflict, and the wrong data structure is usually *why* the code
 is non-minimal.
 
-**Two shape questions are open — see OQ-10 and OQ-11.** Under scope 3 both
-are cheap: adding or splitting an evaluator is another brief and another
-`herdr agent start`, not engineering.
+**A third evaluator is under active consideration — see OQ-12.** Operator
+2026-08-27: an evaluator dedicated to keeping tests focused, rated high
+priority, because **test bloat is an observed problem in the autonomous
+execution layer.**
+
+**Two further shape questions are open — see OQ-10 and OQ-11.** Under scope
+3 all three are cheap: adding or splitting an evaluator is another brief and
+another `herdr agent start`, not engineering.
+
+### The admission test, and why it is not "what subject does it own"
+
+Simplicity had to be a separate agent because of **structural suppression**,
+not topic coverage. The field report is explicit that the correctness brief
+was *actively suppressing* those findings: "this is more complex than the
+problem needs" can never clear an executed-failure bar, so the finding was
+**unsayable** under that contract rather than merely crowded out.
+
+That gives the admission criterion its sharp form: **what can a candidate
+evaluator find that every existing evaluator structurally cannot?**
+
+It also identifies the split axis as **epistemic mode, not subject matter.**
+The four rows distinguishing correctness from simplicity — posture, evidence
+bar, output, authority — are not four independent choices. They are one cut
+appearing four times. That is why two is a resting point rather than an
+arbitrary number, and why adding evaluators *by topic* within a mode needs
+evidence of dilution rather than an appeal to coverage.
+
+Applied to the obvious candidates, most fail: types and invariants are
+reachable by simplicity; error handling and security are reachable by
+correctness (which found a real PKCE flaw). **Performance is the one that
+could not be dismissed** — a regression often cannot produce an executed
+failure, and it is not a shape problem either.
 
 **Admission rule for any future evaluator.** Recorded so the stack does not
 sprawl by accretion:
@@ -248,6 +277,36 @@ epic blocked on four beads. Two were engine-side and no longer apply.
   The operator's original framing was "two faster, less expensive models
   with more targeted instructions." Still no measurement exists, but the
   cost of trying is now a brief rather than an epic.
+- **OQ-12 — a third evaluator for test focus?** Raised by the operator
+  2026-08-27 and rated high priority: **test bloat is an observed problem in
+  the autonomous execution layer.** Under discussion with a Codex peer;
+  operator rules at the decision point.
+
+  Planner position, which **reverses an earlier dismissal.** My first
+  instinct was that simplicity covers it, since tests are code and
+  "non-minimal" applies. That is wrong for four reasons:
+
+  1. **The proposed OC-5 metric is blind to it.** Counting *concepts* was
+     chosen because it is not gameable by density — but forty near-identical
+     parameterised test cases are **one concept and forty tests.** The
+     metric cannot see the bloat it would need to report.
+  2. **Tests have a different unit of analysis.** Source asks "fewer
+     concepts." Tests ask "does each case pin a *distinct* behaviour, and is
+     the assertion load-bearing?" A suite can be conceptually lean and still
+     bloated.
+  3. **The mandate is two-sided, unlike simplicity's.** A test evaluator
+     must cut redundancy *and* protect against coverage loss — the three
+     named classes being cases folded until distinct behaviour is no longer
+     proved, tests deleted while their production behaviour is live, and
+     assertions thinned inside surviving test names. Simplicity only ever
+     cuts.
+  4. **There is a standard to review against, unused at review time.**
+     `FULL_SUITE_WALL_CLOCK_BUDGET_SECONDS = 30`, and `columbo --cost-audit`
+     ranks tests by duration against unique coverage — but only at plan
+     time. Nothing checks it against an actual diff.
+
+  On the structural test, a test evaluator therefore **passes**, and the
+  earlier dismissal was wrong.
 - **OQ-9 — does the contract belong only in the skill, or also in an ADR?**
   Open. The skill travels and is where an orchestrator reads; an ADR is
   binding and survives skill rewrites. Deferred to RECORD, which is
