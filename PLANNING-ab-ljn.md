@@ -780,6 +780,77 @@ walk into it.
 
 ---
 
+## RESEARCH (scope 3) — the skill mapped against the contract
+
+Producer substitution, recorded per the gate protocol: performed inline by
+the orchestrator rather than a sherlock-type subagent — a one-file mapping
+(`.claude/skills/abacus-execute/SKILL.md`, ~200 lines, read in full) against
+contract content already in this record. A subagent would have re-derived
+context this session already holds.
+
+### The one real contradiction, and it is structural
+
+**§1 forbids what the field does.** The role split says the engine
+"launches and reaps adversarial reviewers. **Never hand-perform these**; if
+the engine misbehaves, capture evidence and escalate — do not build a manual
+workaround loop." That rule was written against real failures (contest
+2026-08-20, market-brief 2026-08-21) — but under scope 3 the operator has
+ruled manual orchestration IS the current mode, and mbp runs 100%
+hand-launched reviews. The skill currently outlaws the epic's deliverable.
+
+Resolution for ARCHITECTURE, not silently applied: a **declared mode
+split**. *Engine mode* — the engine launches and reaps; hand-launching stays
+forbidden; §1 stands as written. *Manual mode* — operator-declared for a
+repo or session; the orchestrator launches evaluators per the written
+procedure; the engine's review leg is not in use. Which mode applies is an
+operator declaration, never inferred. The ADR records the split so §1's
+history (why hand-performing was banned) is preserved rather than
+overwritten. §2's operating loop needs a manual-mode counterpart for the
+same reason.
+
+### Minor tension
+
+§6 says "prefer bounded loops of fresh probes over one armed wait" (from
+the observed 25-minute `agent wait` hang). The field procedure backgrounds
+two `agent wait` subscriptions and has not hit the hang. Contract should
+keep the field shape but add the known-hang fallback: background waits,
+plus a bounded fresh-probe check if a wait outlives the expected review
+duration. Not a contradiction — a composition.
+
+### Where every piece lands
+
+| Contract content | Destination | Skill today |
+|---|---|---|
+| Mode split (engine vs manual) | §1 rewrite + ADR | contradicts |
+| Manual operating loop | new § beside §2 | absent |
+| Launch procedure, `--until working` concurrency, 12-14s pane wait, paste-race proof (OC-1, OC-2) | new § (manual mode) | absent |
+| Model/effort variation `-- --model <m>` (OC-9) | same new § | absent |
+| Heading registry + collision rule (OC-6) | new short §; constants stay canonical here, per the no-per-repo-registry rejection | absent |
+| Simplicity brief (OC-3, OC-4, OC-5 + test clause) | template asset file beside the skill (`simplicity-brief.md`) | absent |
+| Simplicity adjudicated as labelled paragraph (OC-7) | §4 addition | absent |
+| Adjudication transaction (OC-12) | §4 addition | partial — grammar yes, completeness + atomic disposition no |
+| Convergence ledger + 2nd/3rd-instance rules (OC-10) | new § between §4 and §5 | absent |
+| Warm-author refresh (OC-11) | same new § | absent |
+| Hazards A–F (OC-8) | new § (A filter-trap, B goal language → note it now lives in `ab-xuz` am. 10, C author-vs-reviewer gates, D reviewer beads, E verify-before-accept, F concerns-to-beads → folded into OC-12) | absent; E partially implied by §4 |
+| Simplicity relay rule (heading first line, no cycle number) | §5 addition | absent |
+| Shadow-trial promotion path | DECOMPOSITION bead, referenced from the ADR | n/a |
+
+Already covered, no change needed: §3 state table, §8 close gate (updated
+this morning), §9 durable state (same), §7 merge path, §10 escalation.
+
+### Verification
+
+`docs-doctor --repo . --json` clean at last run; the skill file is not
+corpus-managed (only `AGENTS.md`, `CONSTRAINTS.md`, `NORTH-STAR.md`,
+`docs/*` are), so skill edits carry no corpus obligations. The ADR will —
+it lands in `docs/adr/` and must pass the design-document review gate
+(bloat + spec validation) per the RECORD rules.
+
+*RESEARCH complete. ARCHITECTURE next: lock the mode split, the skill's new
+section layout, the brief template's full text, and the ADR scope.*
+
+---
+
 ## Per-repo adoption surface — converged inventory, 2026-08-27
 
 Operator question: what other rulesets or documentation should abacus-using
