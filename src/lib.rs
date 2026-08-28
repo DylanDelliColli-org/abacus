@@ -66,12 +66,8 @@ fn agent_name_hash(value: &str) -> u32 {
     })
 }
 
-/// Convert a bead id into Herdr's display-name grammar:
-/// `[a-z][a-z0-9_-]{0,31}`. Unsupported characters become hyphens; the
-/// leading position is normalized separately so every input remains valid.
-/// Names that need truncation retain a stable hash of the full bead id.
-pub fn sanitize_agent_name(bead_id: &str) -> String {
-    let mut name: String = bead_id
+fn normalize_agent_name(value: &str) -> String {
+    let mut name: String = value
         .chars()
         .map(|c| {
             if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_') {
@@ -87,6 +83,36 @@ pub fn sanitize_agent_name(bead_id: &str) -> String {
         Some(_) => name.replace_range(..1, "a"),
         None => name.push('a'),
     }
+    name
+}
+
+/// Sanitize an agent-name stem while reserving a short, grammar-safe suffix.
+/// If the combined identity needs truncation, its full hash remains intact
+/// immediately before the suffix.
+pub(crate) fn sanitize_agent_name_with_reserved_suffix(value: &str, suffix: &str) -> String {
+    let mut name = normalize_agent_name(value);
+    let identity = format!("{value}{suffix}");
+    let reserved = suffix.len() + AGENT_NAME_HASH_HEX_LEN + 1;
+
+    if reserved >= HERDR_AGENT_NAME_LIMIT {
+        return sanitize_agent_name(&identity);
+    }
+    if name.len() + suffix.len() > HERDR_AGENT_NAME_LIMIT {
+        let hash = agent_name_hash(&identity);
+        name.truncate(HERDR_AGENT_NAME_LIMIT - reserved);
+        name.push('-');
+        name.push_str(&format!("{hash:08x}"));
+    }
+    name.push_str(suffix);
+    name
+}
+
+/// Convert a bead id into Herdr's display-name grammar:
+/// `[a-z][a-z0-9_-]{0,31}`. Unsupported characters become hyphens; the
+/// leading position is normalized separately so every input remains valid.
+/// Names that need truncation retain a stable hash of the full bead id.
+pub fn sanitize_agent_name(bead_id: &str) -> String {
+    let mut name = normalize_agent_name(bead_id);
     if name.len() > HERDR_AGENT_NAME_LIMIT {
         let hash = agent_name_hash(bead_id);
         name.truncate(HERDR_AGENT_NAME_LIMIT - AGENT_NAME_HASH_HEX_LEN - 1);
@@ -185,7 +211,7 @@ pub fn parse_bead_outcome(json: &str) -> Result<BeadOutcome, String> {
     }
 }
 
-/// The lane a `herdr worktree create` call opened.
+/// The lane a Herdr worktree command opened.
 #[derive(Debug, PartialEq)]
 pub struct Lane {
     pub workspace_id: String,
@@ -194,16 +220,14 @@ pub struct Lane {
     pub branch: String,
 }
 
-/// Parse the JSON envelope `herdr worktree create` prints:
-/// `{"id":"cli:worktree:create","result":{"type":"worktree_created",...}}`.
-pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
+fn parse_worktree_result(json: &str, expected_kind: &str) -> Result<Lane, String> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(|e| format!("unparseable herdr output: {e}"))?;
     let result = &v["result"];
     let kind = result["type"].as_str().unwrap_or("");
-    if kind != "worktree_created" {
+    if kind != expected_kind {
         return Err(format!(
-            "expected result.type worktree_created, got {kind:?} in: {json}"
+            "expected result.type {expected_kind}, got {kind:?} in: {json}"
         ));
     }
     let field = |path: &[&str]| -> Result<String, String> {
@@ -211,12 +235,9 @@ pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
         for key in path {
             cur = &cur[*key];
         }
-        cur.as_str().map(str::to_owned).ok_or_else(|| {
-            format!(
-                "missing {} in herdr worktree_created output",
-                path.join(".")
-            )
-        })
+        cur.as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("missing {} in herdr {expected_kind} output", path.join(".")))
     };
     Ok(Lane {
         workspace_id: field(&["workspace", "workspace_id"])?,
@@ -224,6 +245,17 @@ pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
         checkout_path: field(&["worktree", "path"])?,
         branch: field(&["worktree", "branch"])?,
     })
+}
+
+/// Parse the JSON envelope `herdr worktree create` prints:
+/// `{"id":"cli:worktree:create","result":{"type":"worktree_created",...}}`.
+pub fn parse_worktree_created(json: &str) -> Result<Lane, String> {
+    parse_worktree_result(json, "worktree_created")
+}
+
+/// Parse the JSON envelope `herdr worktree open` prints.
+pub fn parse_worktree_opened(json: &str) -> Result<Lane, String> {
+    parse_worktree_result(json, "worktree_opened")
 }
 
 /// Read the Rust MSRV declared by a target repository, if it has one.
@@ -489,6 +521,24 @@ mod tests {
                 pane_id: "w1N:p1".into(),
                 checkout_path: "/home/ddc/.herdr/worktrees/abacus/lane-probe".into(),
                 branch: "lane/probe".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_live_worktree_opened_fixture() {
+        let lane = parse_worktree_opened(
+            r#"{"result":{"type":"worktree_opened","workspace":{"workspace_id":"w2N"},"root_pane":{"pane_id":"w2N:p1"},"worktree":{"path":"/repo/lane-open","branch":"lane/ab-open"}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            lane,
+            Lane {
+                workspace_id: "w2N".into(),
+                pane_id: "w2N:p1".into(),
+                checkout_path: "/repo/lane-open".into(),
+                branch: "lane/ab-open".into(),
             }
         );
     }

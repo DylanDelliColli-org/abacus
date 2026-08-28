@@ -7,8 +7,8 @@ use std::time::Duration;
 use crate::review::{Adjudication, FindingDisposition};
 use crate::{
     BeadOutcome, Lane, ReadyBead, dispatch_prompt, format_lane_duration, is_agent_prompt_stalled,
-    is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created, should_reap_lane,
-    target_rust_version,
+    is_dirty_worktree_remove_error, parse_bead_outcome, parse_worktree_created,
+    parse_worktree_opened, should_reap_lane, target_rust_version,
 };
 
 /// The live state of a lane, re-derived from substrate probes each cycle.
@@ -267,7 +267,7 @@ pub fn lane_open_existing_worktree(
         ],
         None,
     )?;
-    let lane = parse_worktree_created(&opened)?;
+    let lane = parse_worktree_opened(&opened)?;
     lane_start_agent(&lane, agent_name)?;
     println!(
         "surviving worktree reopened for {bead_id}: workspace {} on {}",

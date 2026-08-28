@@ -31,7 +31,7 @@ use abacus::review::{
     launch_reviewer, parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
 };
 use abacus::{
-    format_lane_duration, parse_ready, parse_worktree_created, sanitize_agent_name, select_bead,
+    format_lane_duration, parse_ready, parse_worktree_opened, sanitize_agent_name, select_bead,
     version_string,
 };
 
@@ -356,7 +356,7 @@ fn dispatch_resolution(
         ],
         None,
     )?;
-    let lane = parse_worktree_created(&opened)?;
+    let lane = parse_worktree_opened(&opened)?;
     let agent_name = sanitize_agent_name(&format!("r-{}", candidate.bead_id));
     capture(
         "herdr",
@@ -715,7 +715,6 @@ struct SettledLane {
     bead_id: String,
     lane: abacus::Lane,
     lane_available: bool,
-    lane_recovery_allowed: bool,
     outcome: abacus::BeadOutcome,
     elapsed_secs: u64,
 }
@@ -970,8 +969,21 @@ struct ListedLaneBead {
     status: String,
 }
 
-fn status_allows_lane_recovery(status: &str) -> bool {
-    matches!(status, "open" | "in_progress")
+fn outcome_allows_lane_recovery(outcome: abacus::BeadOutcome) -> bool {
+    matches!(
+        outcome,
+        abacus::BeadOutcome::NeverEngaged
+            | abacus::BeadOutcome::Incomplete
+            | abacus::BeadOutcome::Blocked
+    )
+}
+
+fn snapshot_status_is_lane_candidate(status: &str) -> bool {
+    matches!(status, "open" | "in_progress" | "closed")
+}
+
+fn snapshot_status_is_lane_candidate_without_substrate(status: &str) -> bool {
+    matches!(status, "in_progress" | "closed")
 }
 
 fn parse_agent_list(json: &str) -> Result<Vec<AgentView>, String> {
@@ -1018,10 +1030,18 @@ fn lane_candidate_ids(
     local_lane_branch_ids: &BTreeSet<String>,
     agent_names: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut candidate_ids: BTreeSet<_> = listed_beads.into_iter().map(|bead| bead.id).collect();
     let statuses: BTreeMap<_, _> = all_status_beads
         .into_iter()
         .map(|bead| (bead.id, bead.status))
+        .collect();
+    let mut candidate_ids: BTreeSet<_> = listed_beads
+        .into_iter()
+        .map(|bead| bead.id)
+        .filter(|bead_id| {
+            statuses
+                .get(bead_id)
+                .is_some_and(|status| snapshot_status_is_lane_candidate_without_substrate(status))
+        })
         .collect();
     candidate_ids.extend(
         local_lane_branch_ids
@@ -1029,20 +1049,23 @@ fn lane_candidate_ids(
             .filter(|bead_id| {
                 statuses
                     .get(bead_id.as_str())
-                    .is_some_and(|status| status == "in_progress" || status == "closed")
+                    .is_some_and(|status| snapshot_status_is_lane_candidate(status))
             })
             .cloned(),
     );
     candidate_ids.extend(
         statuses
-            .keys()
-            .filter(|bead_id| agent_names.contains(&sanitize_agent_name(bead_id)))
-            .cloned(),
+            .iter()
+            .filter(|(bead_id, status)| {
+                snapshot_status_is_lane_candidate(status)
+                    && agent_names.contains(&sanitize_agent_name(bead_id))
+            })
+            .map(|(bead_id, _)| bead_id.clone()),
     );
     candidate_ids.retain(|bead_id| {
         statuses
             .get(bead_id)
-            .is_some_and(|status| status == "in_progress" || status == "closed")
+            .is_some_and(|status| snapshot_status_is_lane_candidate(status))
     });
     candidate_ids
 }
@@ -1109,9 +1132,13 @@ fn recover_lane_from_substrate(
     bead_id: &str,
     agent_name: &str,
     agent: Option<&AgentView>,
-) -> Result<abacus::Lane, String> {
+    outcome: abacus::BeadOutcome,
+) -> Result<Option<abacus::Lane>, String> {
+    if !outcome_allows_lane_recovery(outcome) {
+        return Ok(None);
+    }
     if let Some(agent) = agent {
-        return Ok(agent_lane(bead_id, agent));
+        return Ok(Some(agent_lane(bead_id, agent)));
     }
 
     let branch = format!("lane/{bead_id}");
@@ -1148,10 +1175,12 @@ fn recover_lane_from_substrate(
             };
             lane_start_agent(&lane, agent_name)?;
             println!("warm lane agent restarted in workspace {workspace_id}");
-            Ok(lane)
+            Ok(Some(lane))
         }
-        RecoveryRung::OpenWorktree => lane_open_existing_worktree(&repo_str, bead_id, agent_name),
-        RecoveryRung::CreateWorktree => lane_recover(&repo_str, bead_id, agent_name),
+        RecoveryRung::OpenWorktree => {
+            lane_open_existing_worktree(&repo_str, bead_id, agent_name).map(Some)
+        }
+        RecoveryRung::CreateWorktree => lane_recover(&repo_str, bead_id, agent_name).map(Some),
     }
 }
 
@@ -1182,10 +1211,6 @@ fn sweep_live_lanes(
         &["list", "--json", "--status", "all"],
         Some(repo),
     )?)?;
-    let bead_statuses: BTreeMap<_, _> = all_status_beads
-        .iter()
-        .map(|bead| (bead.id.clone(), bead.status.clone()))
-        .collect();
     let agent_names = agents
         .iter()
         .filter_map(|agent| agent.name.clone())
@@ -1212,9 +1237,6 @@ fn sweep_live_lanes(
             .iter()
             .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
         let worker_active = agent.is_some_and(|agent| agent.agent_status == "working");
-        let lane_recovery_allowed = bead_statuses
-            .get(&bead_id)
-            .is_some_and(|status| status_allows_lane_recovery(status));
         let lane = agent.map_or_else(
             || abacus::Lane {
                 workspace_id: String::new(),
@@ -1231,7 +1253,6 @@ fn sweep_live_lanes(
                 bead_id: bead_id.clone(),
                 lane,
                 lane_available,
-                lane_recovery_allowed,
                 outcome,
                 elapsed_secs: 0,
             },
@@ -1485,16 +1506,19 @@ fn record_drain_settle(
         }
     }
     let state = observation.state;
-    if settled.lane_recovery_allowed
-        && !settled.lane_available
+    if !settled.lane_available
         && matches!(
             state,
             Some(LaneState::AwaitingReview | LaneState::ReworkRequested | LaneState::Stalled)
         )
     {
         let agent_name = sanitize_agent_name(&settled.bead_id);
-        settled.lane = recover_lane_from_substrate(repo, &settled.bead_id, &agent_name, None)?;
-        settled.lane_available = true;
+        if let Some(lane) =
+            recover_lane_from_substrate(repo, &settled.bead_id, &agent_name, None, settled.outcome)?
+        {
+            settled.lane = lane;
+            settled.lane_available = true;
+        }
     }
     reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
     if state.is_none() {
@@ -1967,7 +1991,11 @@ fn route_selected_existing_lane(
 
     let adjudication = latest_reviewed_adjudication(&pull_request.review_facts)
         .ok_or_else(|| "ReworkRequested lane is missing its reviewed adjudication".to_owned())?;
-    let lane = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent)?;
+    let Some(lane) = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent, outcome)?
+    else {
+        report_existing_lane_skip(&bead.id);
+        return Ok(ExistingLaneDispatch::Skip);
+    };
     require_prompt_engaged(
         lane_prompt_rework(repo, &bead.id, &lane, &agent_name, adjudication)?,
         "rework agent",
@@ -2032,7 +2060,6 @@ fn dispatch_cycle(
         bead_id: bead.id,
         lane,
         lane_available: true,
-        lane_recovery_allowed: true,
         outcome,
         elapsed_secs: lane_started.elapsed().as_secs(),
     }))
@@ -2136,6 +2163,28 @@ mod tests {
     }
 
     #[test]
+    fn completed_outcome_blocks_reuse_at_the_shared_recovery_seam() {
+        let agent = AgentView {
+            name: Some("ab-closed".into()),
+            agent_status: "done".into(),
+            cwd: "/repo/lane-ab-closed".into(),
+            workspace_id: "closed-workspace".into(),
+            pane_id: "closed-pane".into(),
+        };
+
+        let recovered = recover_lane_from_substrate(
+            Path::new("/repo"),
+            "ab-closed",
+            "ab-closed",
+            Some(&agent),
+            BeadOutcome::Completed,
+        )
+        .unwrap();
+
+        assert!(recovered.is_none());
+    }
+
+    #[test]
     fn local_lane_candidate_parser_is_bounded_to_local_lane_refs() {
         let refs = "lane/ab-closed\nlane/ab-in-progress\nmain\norigin/lane/ab-remote\nlane/\n";
 
@@ -2146,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn lane_candidates_exclude_tracker_lifecycle_statuses_before_probing() {
+    fn lane_candidates_require_lane_evidence_for_open_beads() {
         let listed_beads = vec![
             ListedLaneBead {
                 id: "ab-in-progress".into(),
@@ -2159,6 +2208,10 @@ mod tests {
             ListedLaneBead {
                 id: "ab-listed-deferred".into(),
                 status: "deferred".into(),
+            },
+            ListedLaneBead {
+                id: "ab-listed-open".into(),
+                status: "open".into(),
             },
         ];
         let all_status_beads = vec![
@@ -2187,6 +2240,10 @@ mod tests {
                 status: "open".into(),
             },
             ListedLaneBead {
+                id: "ab-listed-open".into(),
+                status: "open".into(),
+            },
+            ListedLaneBead {
                 id: "ab-future".into(),
                 status: "tombstone".into(),
             },
@@ -2209,17 +2266,17 @@ mod tests {
                 "ab-agent-only".to_owned(),
                 "ab-closed".to_owned(),
                 "ab-in-progress".to_owned(),
+                "ab-open".to_owned(),
             ])
         );
     }
 
     #[test]
-    fn only_active_bead_statuses_allow_lane_recovery() {
-        assert!(status_allows_lane_recovery("open"));
-        assert!(status_allows_lane_recovery("in_progress"));
-        for status in ["closed", "deferred", "tombstone"] {
-            assert!(!status_allows_lane_recovery(status));
-        }
+    fn later_authoritative_outcome_gates_lane_recovery() {
+        assert!(outcome_allows_lane_recovery(BeadOutcome::NeverEngaged));
+        assert!(outcome_allows_lane_recovery(BeadOutcome::Incomplete));
+        assert!(outcome_allows_lane_recovery(BeadOutcome::Blocked));
+        assert!(!outcome_allows_lane_recovery(BeadOutcome::Completed));
     }
 
     #[test]
