@@ -113,6 +113,11 @@ authorization. Protocol:
    before the heading, so a discussion comment quoting a prior verdict does
    not count as a fresh verdict. Put relay attribution after the verdict body
    as required above.
+4. A legacy prose-prefaced relay is a protocol violation and deliberately
+   does not register a cycle. The orchestrator recovers by re-posting the
+   verdict with the canonical heading as the first body line and the relay
+   attribution after the verdict body; do not wait for the drain to reinterpret
+   the legacy comment.
 
 ## Manual reviewer brief — self-contained correctness contract
 

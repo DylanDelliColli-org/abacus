@@ -846,6 +846,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_prose_prefaced_relay_does_not_register_a_cycle() {
+        let body = "Relayed by the operator after reviewer sandbox denial.\n\n## Adversarial review — cycle 3\n\n**Verdict NOT REFUTED.**";
+        let facts = review_comment_facts(&[ReviewComment {
+            body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
     fn captured_verdict_quoted_shallowly_in_discussion_is_not_counted() {
         let quoted_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
         let body =
