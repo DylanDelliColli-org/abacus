@@ -715,6 +715,7 @@ struct SettledLane {
     bead_id: String,
     lane: abacus::Lane,
     lane_available: bool,
+    lane_recovery_allowed: bool,
     outcome: abacus::BeadOutcome,
     elapsed_secs: u64,
 }
@@ -969,6 +970,10 @@ struct ListedLaneBead {
     status: String,
 }
 
+fn status_allows_lane_recovery(status: &str) -> bool {
+    matches!(status, "open" | "in_progress")
+}
+
 fn parse_agent_list(json: &str) -> Result<Vec<AgentView>, String> {
     if json.trim().is_empty() {
         return Ok(Vec::new());
@@ -1177,6 +1182,10 @@ fn sweep_live_lanes(
         &["list", "--json", "--status", "all"],
         Some(repo),
     )?)?;
+    let bead_statuses: BTreeMap<_, _> = all_status_beads
+        .iter()
+        .map(|bead| (bead.id.clone(), bead.status.clone()))
+        .collect();
     let agent_names = agents
         .iter()
         .filter_map(|agent| agent.name.clone())
@@ -1203,6 +1212,9 @@ fn sweep_live_lanes(
             .iter()
             .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
         let worker_active = agent.is_some_and(|agent| agent.agent_status == "working");
+        let lane_recovery_allowed = bead_statuses
+            .get(&bead_id)
+            .is_some_and(|status| status_allows_lane_recovery(status));
         let lane = agent.map_or_else(
             || abacus::Lane {
                 workspace_id: String::new(),
@@ -1219,6 +1231,7 @@ fn sweep_live_lanes(
                 bead_id: bead_id.clone(),
                 lane,
                 lane_available,
+                lane_recovery_allowed,
                 outcome,
                 elapsed_secs: 0,
             },
@@ -1472,7 +1485,8 @@ fn record_drain_settle(
         }
     }
     let state = observation.state;
-    if !settled.lane_available
+    if settled.lane_recovery_allowed
+        && !settled.lane_available
         && matches!(
             state,
             Some(LaneState::AwaitingReview | LaneState::ReworkRequested | LaneState::Stalled)
@@ -2018,6 +2032,7 @@ fn dispatch_cycle(
         bead_id: bead.id,
         lane,
         lane_available: true,
+        lane_recovery_allowed: true,
         outcome,
         elapsed_secs: lane_started.elapsed().as_secs(),
     }))
@@ -2196,6 +2211,15 @@ mod tests {
                 "ab-in-progress".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn only_active_bead_statuses_allow_lane_recovery() {
+        assert!(status_allows_lane_recovery("open"));
+        assert!(status_allows_lane_recovery("in_progress"));
+        for status in ["closed", "deferred", "tombstone"] {
+            assert!(!status_allows_lane_recovery(status));
+        }
     }
 
     #[test]

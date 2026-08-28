@@ -57,13 +57,22 @@ pub fn select_bead(beads: &[ReadyBead]) -> Option<&ReadyBead> {
         .min_by_key(|bead| bead.priority)
 }
 
+const HERDR_AGENT_NAME_LIMIT: usize = 32;
+const AGENT_NAME_HASH_HEX_LEN: usize = 8;
+
+fn agent_name_hash(value: &str) -> u32 {
+    value.as_bytes().iter().fold(0x811c9dc5, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x01000193)
+    })
+}
+
 /// Convert a bead id into Herdr's display-name grammar:
 /// `[a-z][a-z0-9_-]{0,31}`. Unsupported characters become hyphens; the
 /// leading position is normalized separately so every input remains valid.
+/// Names that need truncation retain a stable hash of the full bead id.
 pub fn sanitize_agent_name(bead_id: &str) -> String {
     let mut name: String = bead_id
         .chars()
-        .take(32)
         .map(|c| {
             if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_') {
                 c
@@ -77,6 +86,12 @@ pub fn sanitize_agent_name(bead_id: &str) -> String {
         Some(b'a'..=b'z') => {}
         Some(_) => name.replace_range(..1, "a"),
         None => name.push('a'),
+    }
+    if name.len() > HERDR_AGENT_NAME_LIMIT {
+        let hash = agent_name_hash(bead_id);
+        name.truncate(HERDR_AGENT_NAME_LIMIT - AGENT_NAME_HASH_HEX_LEN - 1);
+        name.push('-');
+        name.push_str(&format!("{hash:08x}"));
     }
     name
 }
@@ -428,10 +443,11 @@ mod tests {
     fn sanitizes_bead_ids_for_herdr_agent_names() {
         assert_eq!(sanitize_agent_name("ab-qmc.1"), "ab-qmc-1");
         assert_eq!(sanitize_agent_name("ab-QMC.1"), "ab-----1");
-        assert_eq!(
-            sanitize_agent_name("abcdefghijklmnopqrstuvwxyz0123456789"),
-            "abcdefghijklmnopqrstuvwxyz012345"
-        );
+        let truncated = sanitize_agent_name("abcdefghijklmnopqrstuvwxyz0123456789");
+        let (prefix, hash) = truncated.rsplit_once('-').unwrap();
+        assert_eq!(prefix, "abcdefghijklmnopqrstuvw");
+        assert_eq!(hash.len(), AGENT_NAME_HASH_HEX_LEN);
+        assert!(hash.chars().all(|character| character.is_ascii_hexdigit()));
 
         for bead_id in [
             "ab-qmc.1",
@@ -451,6 +467,16 @@ mod tests {
                 "name was {name:?}"
             );
         }
+    }
+
+    #[test]
+    fn truncated_agent_names_use_the_full_bead_id_to_avoid_collisions() {
+        let first = sanitize_agent_name("market-brief-package-aywst.14.4.15");
+        let second = sanitize_agent_name("market-brief-package-aywst.14.4.18");
+
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
     }
 
     #[test]

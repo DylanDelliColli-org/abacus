@@ -984,6 +984,10 @@ fn run_absent_closed_pr_sweep(
             "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\n\
              if [ \"$1 $2\" = \"agent list\" ]; then\n\
                printf '%s\n' '{{\"result\":{{\"agents\":[]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree list\" ]; then\n\
+               printf '%s\n' '{{\"result\":{{\"worktrees\":[{{\"branch\":\"lane/{bead_id}\",\"path\":\"{root}\",\"open_workspace_id\":null}}]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree open\" ]; then\n\
+               printf '%s\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"recovered-author-workspace\"}},\"root_pane\":{{\"pane_id\":\"recovered-author-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/{bead_id}\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"worktree create\" ]; then\n\
                printf '%s\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"recovered-author-workspace\"}},\"root_pane\":{{\"pane_id\":\"recovered-author-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/{bead_id}\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"workspace create\" ]; then\n\
@@ -1073,6 +1077,14 @@ fn restart_sweep_reports_absent_closed_open_pr_as_awaiting_review() {
             .lines()
             .any(|call| call.starts_with("worktree remove")),
         "AwaitingReview must remain warm:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls.lines().any(|call| {
+            call.starts_with("worktree open")
+                || call.starts_with("worktree create")
+                || call.starts_with(&format!("agent start {bead_id} "))
+        }),
+        "a closed bead's stale author worktree must not be revived:\n{herdr_calls}"
     );
 }
 
