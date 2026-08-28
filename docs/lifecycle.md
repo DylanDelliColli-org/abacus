@@ -31,6 +31,8 @@ on its transitions — launch reviewer, flip status, redispatch rework, reap
 merged, park blocked — and only then dispatches at most one new ready bead
 (ADR 0005 D2). Review reconciliation happens **only** in the drain.
 
+Under ADR 0006, review launching is mode-dependent: engine mode launches automatically; in operator-declared manual mode, the orchestrator launches per the `abacus-execute` procedure.
+
 So a `run` that exits 0 with one bead closed and a lane awaiting review has
 done exactly what it promises. It is not a truncated drain. If you want the
 ready front continuously cleared and reviews reconciled, the command is
