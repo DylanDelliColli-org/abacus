@@ -111,6 +111,85 @@ authorization. Protocol:
    heading. The parser requires the heading as the first body line; a
    prefaced relay is invisible and the drain relaunches the same cycle.
 
+## Manual reviewer brief — self-contained correctness contract
+
+In operator-declared manual mode, give every correctness reviewer a brief
+that produces the same comment-stream artifact as engine mode. Name the
+repository, exact PR and reviewed head, bead and authority path, required
+`## Adversarial review — cycle <n>` heading, verdict grammar, and verdict
+file. State that `gh pr comment <n> --body-file <file>` posts the reviewer's
+authorized deliverable and is exactly one permitted write; everything else
+is read-only.
+
+Supply a gate-scope block rather than making the reviewer rediscover it:
+
+- the focused suite selected for the changed paths;
+- the import-provenance check and expected reviewed checkout;
+- known environment issues, with `none supplied` written explicitly when
+  the list is empty; and
+- room for reviewer-authored targeted probes. A broader gate is permitted
+  only for a specific finding, with the reason recorded under Probes. Do
+  not ask for a default full-suite rerun.
+
+Carry these correctness clauses verbatim from `REFUTATION_BRIEF_TEMPLATE`;
+they are the minimum manual brief, not optional guidance:
+
+> Work as a fresh, maximally adversarial reviewer. Attempt to refute the
+> bead's acceptance claims and the actual PR implementation. Render an
+> honest verdict: use **Verdict REFUTED.** only if you find at least one
+> genuinely serious defect. A clean **Verdict NOT REFUTED.** after a real
+> sweep is a successful review, not a failed one; never escalate a minor
+> issue to justify the effort.
+>
+> After the first blocker, ask whether fixing it could plausibly moot your
+> other findings.
+>
+> - If yes because the defect is a design-level flaw or the wrong contract,
+>   stop enumerating instances. Report the defect class with two confirming
+>   executions, identify the unswept surfaces, and recommend a design pass.
+> - If no because the design is stable and the defects are point-local,
+>   sweep exhaustively and report the complete list.
+>
+> Exhaustive mode does not lower the severity or evidence bar and is never
+> license to pad the report with nitpicks. Every verdict must include
+> `## Coverage`: state which areas were fully swept, which were not, and why.
+>
+> Once a blocker's core claim is guarded, a residual precision-hygiene
+> finding about the new check freezes that check's contract. Replace it with
+> the simplest sufficient contract or split it out; never extend the new
+> check in the current PR.
+>
+> For a guard-shaped finding, require rework at the narrowest choke point
+> that covers the whole class and probe a sibling path. Apply the same "what
+> else makes it pass?" interrogation to guard-shaped specifications before
+> dispatch.
+>
+> For security surfaces, frame briefs, probes, and findings as
+> rejection-contract or correctness-invariant assertions: "verify the
+> validator REJECTS X"; "only canonical encoders can produce a valid wrapper,
+> and a value not produced by them is refused at the sink." Use this
+> vocabulary throughout.
+>
+> - A blocker requires an executed failure or a byte-level demonstration of
+>   the claimed failure itself on a realistic deployed path. A flag difference
+>   or serialization difference alone does not demonstrate a downstream
+>   failure. When relying on documentation for external-service behavior,
+>   execute the claimed external-service outcome against a representative
+>   real target; otherwise self-grade to a concern. Speculation never blocks;
+>   a finding without executed or direct byte-level evidence self-grades to a
+>   concern.
+> - Every finding must include a **Threat model** stating who can trigger it
+>   and from where. A path reachable only by a trusted producer self-grades to
+>   a concern.
+> - After cycle two, a new finding may block only if it belongs to a previously
+>   unadjudicated class. Otherwise identify it as follow-up work rather than a
+>   merge blocker.
+> - For corpus- or file-reading code, include a cwd-variance probe.
+>
+> Include the required `## Coverage` statement before ending every verdict
+> with `## Probes`; list the commands or inspections actually performed and
+> their outcomes, including why any broader gate was necessary.
+
 ## 6. Panes, waiting, and babysitting
 
 - Do not babysit dispatch prompts. The engine recovers codex startup paste

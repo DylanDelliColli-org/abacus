@@ -1981,6 +1981,26 @@ fn sweep_reaps_a_settled_zero_effect_reviewer_and_launches_its_replacement() {
         brief.display()
     );
     assert!(brief.starts_with(workspace.0.join("target/abacus-tmp/reviews")));
+    let brief_contents = std::fs::read_to_string(brief).unwrap();
+    for required in [
+        "authorized deliverable",
+        "could plausibly moot",
+        "areas were fully swept, which were not, and why",
+        "focused suite",
+        "Render an honest verdict",
+        "genuinely serious defect",
+        "executed failure or a byte-level demonstration",
+    ] {
+        assert!(
+            brief_contents.contains(required),
+            "written reviewer brief lacked {required:?}:\n{brief_contents}"
+        );
+    }
+    assert!(
+        !brief_contents
+            .contains("Convergence is a property of the author-reviewer-adjudicator system"),
+        "written reviewer brief retained the superseded verdict-bias sentence:\n{brief_contents}"
+    );
     assert_eq!(
         calls
             .lines()

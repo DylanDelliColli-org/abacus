@@ -116,10 +116,11 @@ pending, printing a per-class summary (the morning report).
 **D3 — The review gate is engine-owned; reviewers are ephemeral.** When a
 lane reaches `AwaitingReview`, the engine generates a refutation brief
 from the bead (authority map, per-bead refutation targets, read-only
-ground rules with exactly one permitted write — `gh pr comment` on the
-target PR — and the required verdict grammar: `REFUTED` / `NOT REFUTED`,
-numbered findings, a Probes section), writes it to a gitignored tmp path
-in the target repo, and launches a fresh codex context in its own
+ground rules whose authorized deliverable is exactly one `gh pr comment`
+write on the target PR, the field-calibrated correctness contract in D9,
+and the required verdict grammar: `REFUTED` / `NOT REFUTED`, numbered
+findings, Coverage, and Probes sections), writes it to a gitignored tmp
+path in the target repo, and launches a fresh codex context in its own
 dedicated herdr workspace under a deterministic per-bead-per-cycle agent
 name (the liveness signal D1's bookkeeping reads), prompted by file path
 and monitored with `prompt --wait`. Reviewer auth is codex subscription
@@ -163,11 +164,21 @@ with a rework spec generated from the adjudication comment, on the same
 branch, so the PR updates in place. If the agent has died, the lane is
 recreated on the same `lane/<bead-id>` branch (the implementing bead
 verifies herdr's worktree-create behavior against an existing branch,
-with a git-worktree fallback). Reaping moves from settle to: `Merged`
-(force allowed, as today) or operator abandon; `Blocked` lanes reap only
-when clean, inverting the existing force path via the dirty-worktree
-error discrimination; `AwaitingReview`, `ReworkRequested`, and `Stalled`
-lanes are never reaped automatically.
+with a git-worktree fallback). Warm author context is a cache, not durable
+authority: retire it after roughly 10–12 correctness-review cycles or at
+roughly 70% context consumption, whichever comes first, and earlier when
+a design-escalation rule requires it. Retirement starts a fresh author
+agent from durable bead and adjudication state in the surviving worktree,
+branch, and PR; it does not reap or abandon the lane. These approximate
+outer caps are lifecycle policy, not a new D1 engine state in this
+amendment: context utilization is not currently a durable fact that the
+stateless engine can reconstruct after a crash. Automatic enforcement
+therefore requires a separately specified durable signal; the
+orchestrating manual mode enforces the caps until one exists. Reaping
+moves from settle to: `Merged` (force allowed, as today) or operator
+abandon; `Blocked` lanes reap only when clean, inverting the existing
+force path via the dirty-worktree error discrimination; `AwaitingReview`,
+`ReworkRequested`, and `Stalled` lanes are never reaped automatically.
 
 **D6 — Exit-code contract.** Exit codes are owned by the lane-state
 layer — the overlap where a closed bead is simultaneously
@@ -192,6 +203,61 @@ adjudication heading and verdict grammar, the brief template, and the
 status context string live as constants in a single module
 (`src/review.rs` or a shared types seam); deployed repo contracts cite
 them; a builder→parser round-trip test makes drift mechanical to catch.
+
+**D9 — The correctness contract incorporates the 2026-08-28 field
+amendments as one coherent revision.** The dispositions below are
+deliberately recorded together because separating them would make the
+sweep, severity, and convergence clauses contradict one another:
+
+1. **Phase-dependent enumeration — brief template.** At the first blocker,
+   the reviewer asks whether its repair could plausibly moot other
+   findings. A design-level or wrong-contract answer stops instance
+   enumeration after two confirming executions and recommends a design
+   pass; point defects on a stable design require an exhaustive sweep and
+   complete list.
+2. **Mandatory completeness — brief template and verdict grammar.** Every
+   verdict names fully swept and unswept areas and explains exclusions in
+   a `Coverage` section. A stopped design review is therefore visibly
+   incomplete rather than falsely clean.
+3. **Contract freeze — brief template.** After a blocker's core claim is
+   guarded, residual precision hygiene on the new check replaces that
+   check with the simplest sufficient contract or splits it out; the
+   current PR never keeps extending the new check.
+4. **Author rotation — D5.** Warm author context has the approximate
+   10–12-cycle / 70%-context outer cap recorded above. No `src/lane.rs`
+   mechanism lands with this amendment because the context threshold is
+   neither exact nor durably observable; claiming crash-reconstructible
+   automation would contradict D1.
+5. **Focused gates — brief template.** Reviewers run the path-focused suite,
+   verify import provenance where applicable, use targeted probes, and
+   consume an explicit known-environment-issues list. They do not repeat
+   the full suite by default; a broader gate needs a finding-specific
+   reason recorded under Probes. Author and CI gates are unchanged.
+6. **Security-surface framing — brief template.** Briefs use positive
+   rejection-contract and correctness-invariant assertions throughout,
+   preserving coverage while avoiding filter-sensitive framing.
+7. **Guard relocation — brief template.** A guard-shaped finding names the
+   narrowest choke point covering the whole class and probes a sibling;
+   guard-shaped specifications receive the same “what else makes it pass?”
+   interrogation before dispatch.
+8. **Documentation-cited outcomes — brief template.** Byte evidence must
+   demonstrate the claimed failure itself. A flag or serialization
+   difference does not establish a downstream service outcome; that
+   outcome must be executed on a representative real target or self-grade
+   to concern.
+9. **One-write purpose — brief template.** The permitted verdict comment is
+   explicitly the reviewer's authorized deliverable, not merely an
+   abstract permission.
+10. **Verdict neutrality — brief template and manual-brief contract.** The
+    sweep remains maximally adversarial, but a refuted verdict requires a
+    genuinely serious defect; a clean verdict after a real sweep is a
+    successful review, and effort never justifies escalating a minor
+    issue. This supersedes the old convergence sentence.
+
+The blocker floor remains an executed failure or byte-level demonstration
+of the claimed failure on a realistic deployed path. The trusted-producer
+calibration and cycle-two class rule remain unchanged. Exhaustive mode is
+therefore not permission to pad or nitpick.
 
 ## Clarification 2026-08-27 — what the decisions above imply for an operator
 
