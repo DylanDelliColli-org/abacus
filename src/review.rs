@@ -31,6 +31,8 @@ pub const ADJUDICATED_HEAD_PREFIX: &str = "Adjudicated head: ";
 pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
 pub const AUTHORIZED_ADJUDICATOR_LOGINS: &[&str] = &["DylanDelliColli"];
 
+const REVIEW_COMMENT_HEADING_SCAN_LINES: usize = 5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdjudicationVerdict {
     Accepted,
@@ -101,6 +103,19 @@ fn heading_cycle(line: &str, prefix: &str) -> Option<u32> {
     (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
+fn first_heading_shaped_line(body: &str) -> Option<&str> {
+    body.lines()
+        .take(REVIEW_COMMENT_HEADING_SCAN_LINES)
+        .find(|line| {
+            let marker_count = line.bytes().take_while(|byte| *byte == b'#').count();
+            (1..=6).contains(&marker_count)
+                && line
+                    .as_bytes()
+                    .get(marker_count)
+                    .is_none_or(u8::is_ascii_whitespace)
+        })
+}
+
 fn parse_adjudicated_head(line: &str) -> Option<String> {
     let head = line.strip_prefix(ADJUDICATED_HEAD_PREFIX)?.trim();
     let head = head
@@ -157,14 +172,14 @@ fn disposition_boundary(remainder: &str) -> bool {
 }
 
 pub fn parse_review_comment(body: &str) -> Result<ParsedReviewComment, String> {
-    let Some(first_line) = body.lines().next() else {
+    let Some(heading) = first_heading_shaped_line(body) else {
         return Ok(ParsedReviewComment::NotAdjudication);
     };
-    if !first_line.starts_with(ADJUDICATION_HEADING_PREFIX) {
+    if !heading.starts_with(ADJUDICATION_HEADING_PREFIX) {
         return Ok(ParsedReviewComment::NotAdjudication);
     }
-    let cycle = heading_cycle(first_line, ADJUDICATION_HEADING_PREFIX)
-        .ok_or_else(|| format!("invalid adjudication cycle heading: {first_line:?}"))?;
+    let cycle = heading_cycle(heading, ADJUDICATION_HEADING_PREFIX)
+        .ok_or_else(|| format!("invalid adjudication cycle heading: {heading:?}"))?;
     let adjudicated_head = body
         .lines()
         .find_map(parse_adjudicated_head)
@@ -205,8 +220,8 @@ fn is_authorized_adjudicator(comment: ReviewComment<'_>) -> bool {
 pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewCommentFacts, String> {
     let mut facts = ReviewCommentFacts::default();
     for (comment_index, comment) in comments.iter().enumerate() {
-        if let Some(first_line) = comment.body.lines().next() {
-            if let Some(cycle) = heading_cycle(first_line, VERDICT_HEADING_PREFIX) {
+        if let Some(heading) = first_heading_shaped_line(comment.body) {
+            if let Some(cycle) = heading_cycle(heading, VERDICT_HEADING_PREFIX) {
                 facts.verdict_cycles.push(cycle);
             }
         }
@@ -225,7 +240,7 @@ pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewComm
             }
             Ok(ParsedReviewComment::NotAdjudication) => {}
             Err(error) => {
-                let heading = comment.body.lines().next().unwrap_or_default();
+                let heading = first_heading_shaped_line(comment.body).unwrap_or_default();
                 facts.malformed_adjudications.push(MalformedAdjudication {
                     comment_number: comment_index + 1,
                     heading: heading.to_owned(),
@@ -789,6 +804,71 @@ mod tests {
                 "source PR {source_pr}"
             );
         }
+    }
+
+    #[test]
+    fn prefaced_relay_verdict_is_counted_from_its_first_heading_shaped_line() {
+        let body = "Relayed by the operator after reviewer sandbox denial.\n\n## Adversarial review — cycle 3\n\n**Verdict NOT REFUTED.**";
+        let facts = review_comment_facts(&[ReviewComment {
+            body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, vec![3]);
+    }
+
+    #[test]
+    fn earlier_heading_shaped_line_prevents_a_later_verdict_from_counting() {
+        let body = "Relay context follows.\n\n## Context\n\n## Adversarial review — cycle 3\n\n**Verdict NOT REFUTED.**";
+        let facts = review_comment_facts(&[ReviewComment {
+            body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn captured_verdict_quoted_deeper_in_discussion_is_not_counted() {
+        let quoted_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
+        let body = format!(
+            "This discussion quotes a prior verdict only as evidence.\n\
+             The prior finding remains unresolved.\n\
+             Do not treat the reproduced artifact as a fresh review.\n\
+             It appears below for context.\n\n\
+             {quoted_verdict}"
+        );
+        let facts = review_comment_facts(&[ReviewComment {
+            body: &body,
+            author_login: "discussion-author",
+            author_association: "CONTRIBUTOR",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn prefaced_adjudication_is_parsed_from_its_first_heading_shaped_line() {
+        let captured = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.source_pr == 26)
+            .unwrap();
+        let body = format!(
+            "Relayed by the operator after a transport failure.\n\n{}",
+            captured.body
+        );
+        let ParsedReviewComment::Adjudication(parsed) = parse_review_comment(&body).unwrap() else {
+            panic!("prefaced adjudication was not recognized");
+        };
+
+        assert_eq!(parsed.cycle, captured.cycle);
+        assert_eq!(parsed.verdict, captured.verdict);
+        assert_eq!(parsed.adjudicated_head, captured.head);
     }
 
     #[test]

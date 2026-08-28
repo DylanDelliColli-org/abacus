@@ -1019,6 +1019,29 @@ fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
 }
 
 #[test]
+fn prefaced_verdict_is_counted_without_relaunching_the_same_reviewer_cycle() {
+    let bead_id = "it-prefaced-verdict";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"Relayed by the operator after reviewer sandbox denial.\n\n## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"CONTRIBUTOR"}]}"####;
+    let (output, herdr_calls, _gh_calls) =
+        run_absent_closed_pr_sweep("prefaced-verdict", bead_id, pull_request, false);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the prefaced verdict changed the lane classification: {stdout}"
+    );
+    assert!(
+        !herdr_calls.contains("agent start rev-it-prefaced-verdict-c1"),
+        "the already-verdicted cycle was relaunched:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn malformed_authorized_adjudication_warns_once_and_drain_continues() {
     let bead_id = "it-malformed-adjudication";
     let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED because rework is required.\n\nAdjudicated head: review-head","author":{"login":"DylanDelliColli"},"authorAssociation":"OWNER"}]}"####;

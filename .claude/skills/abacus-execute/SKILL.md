@@ -108,9 +108,11 @@ authorization. Protocol:
    `gh pr comment <n> --body-file <file>`.
 2. Attribution goes AFTER the verdict body — a `---` rule, then one italic
    line stating you relayed it.
-3. Never put any line above the `## Adversarial review — cycle <n>`
-   heading. The parser requires the heading as the first body line; a
-   prefaced relay is invisible and the drain relaunches the same cycle.
+3. Keep the `## Adversarial review — cycle <n>` heading as the first body
+   line. The parser tolerates a short preface only when the canonical heading
+   is the first heading-shaped line within the first five lines; headings
+   quoted deeper in discussion remain invisible. Canonical-first relays avoid
+   that ambiguity entirely.
 
 ## Manual reviewer brief — self-contained correctness contract
 
