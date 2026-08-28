@@ -1839,6 +1839,22 @@ fn parse_advertised_default_branch(output: &str) -> Result<String, String> {
     ))
 }
 
+fn resolve_default_branch(
+    symbolic_attempt: Result<String, String>,
+    advertised_attempt: Result<String, String>,
+) -> Result<String, String> {
+    match advertised_attempt {
+        Ok(branch) => Ok(branch),
+        Err(advertised_error) => symbolic_attempt.map_err(|symbolic_error| {
+            format!(
+                "default branch discovery failed after both attempts: \
+                 `git symbolic-ref --short refs/remotes/origin/HEAD`: {symbolic_error}; \
+                 `git ls-remote --symref origin HEAD`: {advertised_error}"
+            )
+        }),
+    }
+}
+
 fn discover_default_branch(repo: &Path) -> Result<String, String> {
     let symbolic_attempt = capture(
         "git",
@@ -1846,24 +1862,14 @@ fn discover_default_branch(repo: &Path) -> Result<String, String> {
         Some(repo),
     )
     .and_then(|output| parse_symbolic_default_branch(&output));
-    let symbolic_error = match symbolic_attempt {
-        Ok(branch) => return Ok(branch),
-        Err(error) => error,
-    };
-
-    capture(
+    let advertised_attempt = capture(
         "git",
         &["ls-remote", "--symref", "origin", "HEAD"],
         Some(repo),
     )
-    .and_then(|output| parse_advertised_default_branch(&output))
-    .map_err(|advertised_error| {
-        format!(
-            "default branch discovery failed after both attempts: \
-             `git symbolic-ref --short refs/remotes/origin/HEAD`: {symbolic_error}; \
-             `git ls-remote --symref origin HEAD`: {advertised_error}"
-        )
-    })
+    .and_then(|output| parse_advertised_default_branch(&output));
+
+    resolve_default_branch(symbolic_attempt, advertised_attempt)
 }
 
 fn local_lane_branch_exists(repo: &Path, bead_id: &str) -> Result<bool, String> {
@@ -2276,6 +2282,50 @@ mod tests {
         assert_eq!(
             parse_advertised_default_branch(output).unwrap(),
             "release/next"
+        );
+    }
+
+    #[test]
+    fn advertised_default_branch_wins_over_a_stale_local_symbolic_ref() {
+        assert_eq!(
+            resolve_default_branch(Ok("master".into()), Ok("dev".into())).unwrap(),
+            "dev"
+        );
+    }
+
+    #[test]
+    fn agreeing_default_branch_attempts_return_the_shared_branch() {
+        assert_eq!(
+            resolve_default_branch(Ok("main".into()), Ok("main".into())).unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn either_default_branch_attempt_can_cover_the_others_failure() {
+        assert_eq!(
+            resolve_default_branch(Err("local ref missing".into()), Ok("develop".into())).unwrap(),
+            "develop"
+        );
+        assert_eq!(
+            resolve_default_branch(Ok("main".into()), Err("remote unavailable".into())).unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn dual_default_branch_failure_preserves_both_attempt_diagnostics() {
+        let error = resolve_default_branch(
+            Err("local ref missing".into()),
+            Err("remote unavailable".into()),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "default branch discovery failed after both attempts: \
+             `git symbolic-ref --short refs/remotes/origin/HEAD`: local ref missing; \
+             `git ls-remote --symref origin HEAD`: remote unavailable"
         );
     }
 

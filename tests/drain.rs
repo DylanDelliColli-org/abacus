@@ -28,6 +28,122 @@ fn make_executable(path: &Path) {
 }
 
 #[test]
+fn drain_prefers_advertised_default_branch_when_local_origin_head_is_stale() {
+    let workspace = TempDir::new("drain-stale-origin-head");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+
+    let completed = workspace.0.join("completed");
+    let gh_calls = workspace.0.join("gh-calls");
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               if [ -f '{completed}' ]; then\n\
+                 printf '[]\\n'\n\
+               else\n\
+                 printf '[{{\"id\":\"it-stale-head\",\"title\":\"stale origin head\",\"priority\":1,\"issue_type\":\"task\",\"labels\":[]}}]\\n'\n\
+               fi\n\
+             elif [ \"$1 $2 $3\" = \"update it-stale-head --claim\" ]; then\n\
+               exit 0\n\
+             elif [ \"$1 $2\" = \"show it-stale-head\" ]; then\n\
+               printf '[{{\"status\":\"closed\"}}]\\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\\n' \"$*\" >&2\n\
+               exit 2\n\
+             fi\n",
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2\" = \"worktree create\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"stale-head-workspace\"}},\"root_pane\":{{\"pane_id\":\"stale-head-pane\"}},\"worktree\":{{\"path\":\"{root}\",\"branch\":\"lane/it-stale-head\"}}}}}}'\n\
+             elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
+               case \"$4\" in\n\
+                 *\"gh pr create --base dev\"*) gh pr create --base dev ;;\n\
+                 *\"gh pr create --base master\"*) gh pr create --base master ;;\n\
+                 *) gh pr create --base missing ;;\n\
+               esac\n\
+               : > '{completed}'\n\
+               printf 'worker settled\\n'\n\
+             fi\n",
+            root = workspace.0.display(),
+            completed = completed.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        "#!/bin/sh\n\
+         if [ \"$1 $2 $3\" = \"symbolic-ref --short refs/remotes/origin/HEAD\" ]; then\n\
+           printf 'origin/master\\n'\n\
+         elif [ \"$1 $2 $3 $4\" = \"ls-remote --symref origin HEAD\" ]; then\n\
+           printf 'ref: refs/heads/dev\\tHEAD\\n0123456789abcdef\\tHEAD\\n'\n\
+         elif [ \"$1\" = \"for-each-ref\" ]; then\n\
+           :\n\
+         else\n\
+           printf 'unexpected git call: %s\\n' \"$*\" >&2\n\
+           exit 2\n\
+         fi\n",
+    )
+    .unwrap();
+
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             if [ \"$1 $2\" = \"pr create\" ]; then\n\
+               exit 0\n\
+             fi\n\
+             printf 'no pull requests found for branch\\n' >&2\n\
+             exit 1\n",
+            gh_calls.display()
+        ),
+    )
+    .unwrap();
+
+    for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
+    let gh_calls = std::fs::read_to_string(gh_calls).unwrap();
+    assert!(
+        gh_calls.lines().any(|call| call == "pr create --base dev"),
+        "worker PR used the stale local default branch:\n{gh_calls}"
+    );
+}
+
+#[test]
 fn drain_never_claims_dispatches_or_reports_a_ready_epic() {
     let workspace = TempDir::new("drain-ready-epic");
     let fake_bin = workspace.0.join("fake-bin");
