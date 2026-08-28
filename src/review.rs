@@ -28,7 +28,7 @@ pub const FINDING_DISPOSITION_SEPARATOR: &str = "): ";
 pub const FINDING_ACCEPTED_DISPOSITION: &str = "ACCEPTED";
 pub const FINDING_REJECTED_DISPOSITION: &str = "REJECTED";
 pub const ADJUDICATED_HEAD_PREFIX: &str = "Adjudicated head: ";
-pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER"];
+pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
 pub const AUTHORIZED_ADJUDICATOR_LOGINS: &[&str] = &["DylanDelliColli"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -797,10 +797,6 @@ mod tests {
             .iter()
             .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
             .unwrap();
-        let rework = CAPTURED_PRODUCTION_ADJUDICATIONS
-            .iter()
-            .find(|captured| captured.verdict == AdjudicationVerdict::Rework)
-            .unwrap();
         let reviewer_body = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
         let facts = review_comment_facts(&[
             ReviewComment {
@@ -812,11 +808,6 @@ mod tests {
                 body: accepted.body,
                 author_login: "forger",
                 author_association: "MEMBER",
-            },
-            ReviewComment {
-                body: rework.body,
-                author_login: "DylanDelliColli",
-                author_association: "COLLABORATOR",
             },
             ReviewComment {
                 body: "## Adjudication — cycle not-a-number\n\nmalformed",
@@ -842,6 +833,26 @@ mod tests {
     }
 
     #[test]
+    fn allowlisted_collaborator_adjudication_is_authorized() {
+        let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
+            .unwrap();
+
+        let facts = review_comment_facts(&[ReviewComment {
+            body: accepted.body,
+            author_login: "DylanDelliColli",
+            author_association: "COLLABORATOR",
+        }])
+        .unwrap();
+
+        assert_eq!(
+            facts.latest_adjudication.unwrap().verdict,
+            AdjudicationVerdict::Accepted
+        );
+    }
+
+    #[test]
     fn allowlisted_member_adjudication_is_authorized() {
         let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
             .iter()
@@ -859,6 +870,28 @@ mod tests {
             facts.latest_adjudication.unwrap().verdict,
             AdjudicationVerdict::Accepted
         );
+    }
+
+    #[test]
+    fn non_allowlisted_login_is_never_authorized_regardless_of_association() {
+        let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
+            .unwrap();
+
+        for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            let facts = review_comment_facts(&[ReviewComment {
+                body: accepted.body,
+                author_login: "not-the-operator",
+                author_association: association,
+            }])
+            .unwrap();
+
+            assert_eq!(
+                facts.latest_adjudication, None,
+                "non-allowlisted login passed with association {association}"
+            );
+        }
     }
 
     #[test]
@@ -1102,7 +1135,10 @@ mod tests {
         assert_eq!(FINDING_DISPOSITION_SEPARATOR, "): ");
         assert_eq!(FINDING_ACCEPTED_DISPOSITION, "ACCEPTED");
         assert_eq!(FINDING_REJECTED_DISPOSITION, "REJECTED");
-        assert_eq!(AUTHORIZED_ADJUDICATOR_ASSOCIATIONS, &["OWNER", "MEMBER"]);
+        assert_eq!(
+            AUTHORIZED_ADJUDICATOR_ASSOCIATIONS,
+            &["OWNER", "MEMBER", "COLLABORATOR"]
+        );
         assert_eq!(AUTHORIZED_ADJUDICATOR_LOGINS, &["DylanDelliColli"]);
     }
 

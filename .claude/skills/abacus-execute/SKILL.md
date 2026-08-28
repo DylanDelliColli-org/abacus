@@ -74,8 +74,9 @@ at the current head, then the merge. Nothing else is acceptance.
 ## 4. Adjudication grammar — byte-exact, machine-parsed
 
 Post as a PR comment. The engine parses it; deviation makes it invisible or
-inert. Only the allowlisted operator login with OWNER/MEMBER association
-counts, and the cycle must match a parsed reviewer-verdict cycle on the PR.
+inert. Only the allowlisted operator login with OWNER/MEMBER/COLLABORATOR
+association counts, and the cycle must match a parsed reviewer-verdict cycle
+on the PR.
 
 ```markdown
 ## Adjudication — cycle <k>

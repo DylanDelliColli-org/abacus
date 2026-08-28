@@ -1054,11 +1054,15 @@ fn malformed_authorized_adjudication_warns_once_and_drain_continues() {
 }
 
 #[test]
-fn member_rework_on_the_reviewed_head_launches_cycle_two_after_the_head_moves() {
-    let bead_id = "it-member-reworked";
-    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"reworked-head","number":37,"comments":[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"NONE"},{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::next_reviewer_cycle): ACCEPTED. Launch cycle 2 after the author moves the head.\n\nAdjudicated head: reviewed-head","author":{"login":"DylanDelliColli"},"authorAssociation":"MEMBER"}]}"####;
-    let (output, herdr_calls, _gh_calls) =
-        run_absent_closed_pr_sweep("member-rework-cycle-two", bead_id, pull_request, false);
+fn collaborator_rework_on_the_reviewed_head_launches_cycle_two_after_the_head_moves() {
+    let bead_id = "it-collaborator-reworked";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"reworked-head","number":37,"comments":[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"NONE"},{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED. Rework required.\n\nFinding 1 (src/main.rs::next_reviewer_cycle): ACCEPTED. Launch cycle 2 after the author moves the head.\n\nAdjudicated head: reviewed-head","author":{"login":"DylanDelliColli"},"authorAssociation":"COLLABORATOR"}]}"####;
+    let (output, herdr_calls, _gh_calls) = run_absent_closed_pr_sweep(
+        "collaborator-rework-cycle-two",
+        bead_id,
+        pull_request,
+        false,
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -1071,12 +1075,12 @@ fn member_rework_on_the_reviewed_head_launches_cycle_two_after_the_head_moves() 
         "the moved head did not return the lane to AwaitingReview: {stdout}"
     );
     assert!(
-        herdr_calls.contains("agent start rev-it-member-reworked-c2"),
-        "the MEMBER adjudication did not advance the reviewer cycle:\n{herdr_calls}"
+        herdr_calls.contains("agent start rev-it-collaborator-reworked-c2"),
+        "the COLLABORATOR adjudication did not advance the reviewer cycle:\n{herdr_calls}"
     );
     assert!(
-        !herdr_calls.contains("agent start rev-it-member-reworked-c1"),
-        "the MEMBER adjudication was ignored and cycle 1 relaunched:\n{herdr_calls}"
+        !herdr_calls.contains("agent start rev-it-collaborator-reworked-c1"),
+        "the COLLABORATOR adjudication was ignored and cycle 1 relaunched:\n{herdr_calls}"
     );
 }
 
