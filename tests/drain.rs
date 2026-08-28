@@ -1053,6 +1053,117 @@ fn restart_sweep_recovers_branch_backed_open_lane_from_surviving_worktree() {
 }
 
 #[test]
+fn restart_sweep_recognizes_a_legacy_named_long_id_agent_without_recovery() {
+    let workspace = TempDir::new("restart-legacy-agent-name");
+    let fake_bin = workspace.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let herdr_calls = workspace.0.join("herdr-calls");
+    let bead_id = "market-brief-package-aywst.14.4.15";
+    let legacy_name = "market-brief-package-aywst-14-4-";
+
+    let fake_br = fake_bin.join("br");
+    std::fs::write(
+        &fake_br,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}\\n'\n\
+             elif [ \"$1 $2\" = \"list --json\" ]; then\n\
+               printf '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}\\n'\n\
+             elif [ \"$1\" = \"ready\" ]; then\n\
+               printf '[]\\n'\n\
+             elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
+               printf '[{{\"status\":\"in_progress\",\"comments\":[]}}]\\n'\n\
+             else\n\
+               printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+        ),
+    )
+    .unwrap();
+
+    let fake_herdr = fake_bin.join("herdr");
+    std::fs::write(
+        &fake_herdr,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{herdr_calls}'\n\
+             if [ \"$1 $2\" = \"agent list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"agents\":[{{\"name\":\"{legacy_name}\",\"agent_status\":\"done\",\"cwd\":\"{root}\",\"workspace_id\":\"legacy-workspace\",\"pane_id\":\"legacy-pane\"}}]}}}}'\n\
+             elif [ \"$1 $2\" = \"worktree list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"worktrees\":[{{\"branch\":\"lane/{bead_id}\",\"path\":\"{root}\",\"open_workspace_id\":\"legacy-workspace\"}}]}}}}'\n\
+             elif [ \"$1 $2\" = \"pane list\" ]; then\n\
+               printf '%s\\n' '{{\"result\":{{\"panes\":[{{\"pane_id\":\"legacy-pane\",\"cwd\":\"{root}\"}}]}}}}'\n\
+             elif [ \"$1 $2\" = \"agent start\" ]; then\n\
+               printf 'agent_pane_busy: legacy-pane\\n' >&2; exit 1\n\
+             else\n\
+               printf 'unexpected herdr call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+            herdr_calls = herdr_calls.display(),
+            root = workspace.0.display(),
+        ),
+    )
+    .unwrap();
+
+    let fake_git = fake_bin.join("git");
+    std::fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"for-each-ref\" ]; then\n\
+               printf 'lane/{bead_id}\\n'\n\
+             else\n\
+               printf 'unexpected git call: %s\\n' \"$*\" >&2; exit 2\n\
+             fi\n",
+        ),
+    )
+    .unwrap();
+    let fake_gh = fake_bin.join("gh");
+    std::fs::write(
+        &fake_gh,
+        "#!/bin/sh\nprintf 'no pull requests found for branch\\n' >&2\nexit 1\n",
+    )
+    .unwrap();
+    for fake_program in [&fake_br, &fake_herdr, &fake_git, &fake_gh] {
+        make_executable(fake_program);
+    }
+
+    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").expect("test PATH must be set"),
+    )))
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_abacus"))
+        .args(["drain", workspace.0.to_str().unwrap()])
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("stalled: 1 [{bead_id}")),
+        "the legacy agent was not recognized as the lane substrate: {stdout}"
+    );
+    let calls = std::fs::read_to_string(herdr_calls).unwrap();
+    assert!(
+        !calls
+            .lines()
+            .any(|call| { call.starts_with("pane list") || call.starts_with("agent start") }),
+        "recognition fell through into colliding lane recovery:\n{calls}"
+    );
+    assert!(
+        calls
+            .lines()
+            .filter(|call| call.starts_with("worktree list"))
+            .count()
+            <= 1,
+        "legacy recognition probed the worktree substrate more than once:\n{calls}"
+    );
+}
+
+#[test]
 fn restart_sweep_launches_distinct_same_cycle_reviewers_for_deep_siblings() {
     let workspace = TempDir::new("restart-deep-sibling-reviewers");
     let fake_bin = workspace.0.join("fake-bin");
@@ -1727,15 +1838,43 @@ fn run_skips_branch_backed_bead_awaiting_adjudication_and_dispatches_next_ready_
     run_skips_existing_lane_pending_review(comments, "run-skip-existing-awaiting-adjudication");
 }
 
-fn run_rework_dispatch_sweep(
-    tag: &str,
+struct ReworkSweepScenario {
+    bead_status: &'static str,
     warm_agent_present: bool,
     workspace_survives: bool,
     ready_fresh_bead: bool,
     prompt_remains_pasted: bool,
     meterless_baseline: bool,
     meterless_post_settle: bool,
+}
+
+impl Default for ReworkSweepScenario {
+    fn default() -> Self {
+        Self {
+            bead_status: "in_progress",
+            warm_agent_present: false,
+            workspace_survives: false,
+            ready_fresh_bead: false,
+            prompt_remains_pasted: false,
+            meterless_baseline: false,
+            meterless_post_settle: false,
+        }
+    }
+}
+
+fn run_rework_dispatch_sweep(
+    tag: &str,
+    scenario: ReworkSweepScenario,
 ) -> (std::process::Output, String, String) {
+    let ReworkSweepScenario {
+        bead_status,
+        warm_agent_present,
+        workspace_survives,
+        ready_fresh_bead,
+        prompt_remains_pasted,
+        meterless_baseline,
+        meterless_post_settle,
+    } = scenario;
     let bead_id = "it-rework";
     let workspace = TempDir::new(tag);
     let fake_bin = workspace.0.join("fake-bin");
@@ -1758,16 +1897,20 @@ fn run_rework_dispatch_sweep(
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{br_calls}'\n\
              if [ \"$1 $2 $3 $4\" = \"list --json --status all\" ]; then\n\
-               printf '%s\\n' '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}'\n\
+               printf '%s\\n' '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"{bead_status}\"}}]}}'\n\
              elif [ \"$1 $2\" = \"list --json\" ]; then\n\
-               printf '%s\\n' '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"in_progress\"}}]}}'\n\
+               printf '%s\\n' '{{\"issues\":[{{\"id\":\"{bead_id}\",\"status\":\"{bead_status}\"}}]}}'\n\
              elif [ \"$1\" = \"ready\" ]; then\n\
                if [ -f '{fresh_completed}' ]; then printf '[]\\n'; else printf '%s\\n' '{ready}'; fi\n\
              elif [ \"$1 $2 $3\" = \"update it-fresh --claim\" ]; then\n\
                printf 'claim-fresh\\n' >> '{events}'\n\
                if [ ! -f '{rework_prompted}' ]; then printf 'fresh claim raced rework\\n' >&2; exit 9; fi\n\
              elif [ \"$1 $2\" = \"show {bead_id}\" ]; then\n\
-               printf '[{{\"status\":\"in_progress\",\"comments\":[]}}]\\n'\n\
+               if [ -f '{rework_prompted}' ]; then\n\
+                 printf '[{{\"status\":\"in_progress\",\"comments\":[]}}]\\n'\n\
+               else\n\
+                 printf '[{{\"status\":\"{bead_status}\",\"comments\":[]}}]\\n'\n\
+               fi\n\
              elif [ \"$1 $2\" = \"show it-fresh\" ]; then\n\
                printf '[{{\"status\":\"closed\",\"comments\":[]}}]\\n'\n\
              else printf 'unexpected br call: %s\\n' \"$*\" >&2; exit 2; fi\n",
@@ -1776,6 +1919,7 @@ fn run_rework_dispatch_sweep(
             ready = ready,
             events = events.display(),
             rework_prompted = rework_prompted.display(),
+            bead_status = bead_status,
         ),
     )
     .unwrap();
@@ -1841,6 +1985,7 @@ elif [ "$1 $2 $3" = "agent prompt it-fresh" ]; then
   : > '{fresh_completed}'
   printf 'fresh settled\n'
 elif [ "$1 $2" = "pane read" ]; then
+  if [ -z "$3" ]; then printf 'placeholder pane reached rework prompt\n' >&2; exit 7; fi
   if [ ! -f '{prompt_settled}' ]; then
     if [ "{meterless_baseline}" = "true" ]; then
       printf 'Codex starting; status meter not rendered yet\n'
@@ -1934,12 +2079,10 @@ fi
 fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
     let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
         "rework-existing-agent",
-        true,
-        false,
-        false,
-        false,
-        false,
-        false,
+        ReworkSweepScenario {
+            warm_agent_present: true,
+            ..Default::default()
+        },
     );
 
     assert!(
@@ -1984,12 +2127,11 @@ fn rework_redispatches_into_the_existing_warm_agent_on_the_same_branch() {
 fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
     let (output, herdr_calls, events) = run_rework_dispatch_sweep(
         "rework-pasted-prompt",
-        true,
-        false,
-        false,
-        true,
-        false,
-        false,
+        ReworkSweepScenario {
+            warm_agent_present: true,
+            prompt_remains_pasted: true,
+            ..Default::default()
+        },
     );
 
     assert!(
@@ -2047,12 +2189,13 @@ fn rework_prompt_recovers_the_shared_pasted_but_unsubmitted_race() {
 fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
     let (output, herdr_calls, events) = run_rework_dispatch_sweep(
         "rework-meterless-baseline",
-        true,
-        false,
-        false,
-        true,
-        true,
-        true,
+        ReworkSweepScenario {
+            warm_agent_present: true,
+            prompt_remains_pasted: true,
+            meterless_baseline: true,
+            meterless_post_settle: true,
+            ..Default::default()
+        },
     );
 
     assert!(
@@ -2084,12 +2227,11 @@ fn meterless_warm_rework_recovers_before_the_pasted_composer_renders() {
 fn meterless_warm_rework_with_nonzero_post_settle_meter_is_engaged() {
     let (output, herdr_calls, events) = run_rework_dispatch_sweep(
         "rework-meterless-engaged",
-        true,
-        false,
-        false,
-        false,
-        true,
-        false,
+        ReworkSweepScenario {
+            warm_agent_present: true,
+            meterless_baseline: true,
+            ..Default::default()
+        },
     );
 
     assert!(
@@ -2109,12 +2251,11 @@ fn meterless_warm_rework_with_nonzero_post_settle_meter_is_engaged() {
 fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
     let (output, herdr_calls, events) = run_rework_dispatch_sweep(
         "rework-before-fresh",
-        true,
-        false,
-        true,
-        false,
-        false,
-        false,
+        ReworkSweepScenario {
+            warm_agent_present: true,
+            ready_fresh_bead: true,
+            ..Default::default()
+        },
     );
 
     assert!(
@@ -2137,15 +2278,8 @@ fn rework_outranks_fresh_dispatch_within_one_sweep_iteration() {
 
 #[test]
 fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
-    let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
-        "rework-recover-agent",
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-    );
+    let (output, herdr_calls, _events) =
+        run_rework_dispatch_sweep("rework-recover-agent", ReworkSweepScenario::default());
 
     assert!(
         output.status.success(),
@@ -2176,15 +2310,46 @@ fn a_vanished_warm_agent_recreates_the_lane_on_the_existing_branch() {
 }
 
 #[test]
+fn a_closed_rework_requested_lane_recovers_its_vanished_agent_before_prompting() {
+    let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
+        "closed-rework-recover-agent",
+        ReworkSweepScenario {
+            bead_status: "closed",
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        herdr_calls.contains("worktree open")
+            && herdr_calls.contains("--branch lane/it-rework")
+            && herdr_calls.contains("agent start it-rework --kind codex --pane recovered-pane"),
+        "Completed + ReworkRequested did not recover the surviving lane:\n{herdr_calls}"
+    );
+    assert!(
+        herdr_calls.contains("pane read recovered-pane --lines 40")
+            && herdr_calls.contains("agent prompt it-rework"),
+        "rework was not prompted through the recovered pane:\n{herdr_calls}"
+    );
+    assert!(
+        !herdr_calls.contains("pane read  --lines 40"),
+        "the placeholder lane reached the rework prompt:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn a_surviving_workspace_restarts_the_agent_in_its_existing_pane() {
     let (output, herdr_calls, _events) = run_rework_dispatch_sweep(
         "rework-restart-workspace",
-        false,
-        true,
-        false,
-        false,
-        false,
-        false,
+        ReworkSweepScenario {
+            workspace_survives: true,
+            ..Default::default()
+        },
     );
 
     assert!(

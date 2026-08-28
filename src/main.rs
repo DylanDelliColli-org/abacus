@@ -31,8 +31,8 @@ use abacus::review::{
     launch_reviewer, parse_combined_status, parse_review_bead, review_comment_facts, reviewer_name,
 };
 use abacus::{
-    format_lane_duration, parse_ready, parse_worktree_opened, sanitize_agent_name, select_bead,
-    version_string,
+    format_lane_duration, legacy_sanitize_agent_name, parse_ready, parse_worktree_opened,
+    sanitize_agent_name, select_bead, version_string,
 };
 
 fn main() {
@@ -713,6 +713,7 @@ enum DispatchCycle {
 
 struct SettledLane {
     bead_id: String,
+    agent_name: String,
     lane: abacus::Lane,
     lane_available: bool,
     outcome: abacus::BeadOutcome,
@@ -969,12 +970,21 @@ struct ListedLaneBead {
     status: String,
 }
 
-fn outcome_allows_lane_recovery(outcome: abacus::BeadOutcome) -> bool {
+/// Decide recovery only after both lifecycle derivation and the authoritative
+/// bead probe. Rework outranks the author's `closed` signal, while an ordinary
+/// stalled lane may revive only a nonterminal open/in-progress bead.
+fn lane_state_allows_recovery(state: LaneState, outcome: abacus::BeadOutcome) -> bool {
     matches!(
-        outcome,
-        abacus::BeadOutcome::NeverEngaged
-            | abacus::BeadOutcome::Incomplete
-            | abacus::BeadOutcome::Blocked
+        (state, outcome),
+        (
+            LaneState::ReworkRequested,
+            abacus::BeadOutcome::Completed
+                | abacus::BeadOutcome::Incomplete
+                | abacus::BeadOutcome::NeverEngaged
+        ) | (
+            LaneState::Stalled,
+            abacus::BeadOutcome::Incomplete | abacus::BeadOutcome::NeverEngaged
+        )
     )
 }
 
@@ -1098,6 +1108,62 @@ fn repo_worktrees(repo: &Path) -> Result<Vec<WorktreeView>, String> {
     )?)
 }
 
+fn find_lane_agent_in_substrate<'a>(
+    bead_id: &str,
+    agents: &'a [AgentView],
+    worktrees: &[WorktreeView],
+) -> Option<&'a AgentView> {
+    let current_name = sanitize_agent_name(bead_id);
+    if let Some(agent) = agents
+        .iter()
+        .find(|agent| agent.name.as_deref() == Some(current_name.as_str()))
+    {
+        return Some(agent);
+    }
+
+    let legacy_name = legacy_sanitize_agent_name(bead_id);
+    if legacy_name == current_name {
+        return None;
+    }
+    let agent = agents
+        .iter()
+        .find(|agent| agent.name.as_deref() == Some(legacy_name.as_str()))?;
+    let branch = format!("lane/{bead_id}");
+    let worktree = worktrees
+        .iter()
+        .find(|worktree| worktree.branch == branch)?;
+    let workspace_matches = worktree
+        .open_workspace_id
+        .as_deref()
+        .is_none_or(|workspace_id| workspace_id == agent.workspace_id);
+    (Path::new(&agent.cwd) == Path::new(&worktree.path) && workspace_matches).then_some(agent)
+}
+
+fn resolve_lane_agent<'a>(
+    repo: &Path,
+    bead_id: &str,
+    agents: &'a [AgentView],
+) -> Result<Option<&'a AgentView>, String> {
+    let current_name = sanitize_agent_name(bead_id);
+    if let Some(agent) = agents
+        .iter()
+        .find(|agent| agent.name.as_deref() == Some(current_name.as_str()))
+    {
+        return Ok(Some(agent));
+    }
+
+    let legacy_name = legacy_sanitize_agent_name(bead_id);
+    if legacy_name == current_name
+        || !agents
+            .iter()
+            .any(|agent| agent.name.as_deref() == Some(legacy_name.as_str()))
+    {
+        return Ok(None);
+    }
+    let worktrees = repo_worktrees(repo)?;
+    Ok(find_lane_agent_in_substrate(bead_id, agents, &worktrees))
+}
+
 fn agent_lane(bead_id: &str, agent: &AgentView) -> abacus::Lane {
     abacus::Lane {
         workspace_id: agent.workspace_id.clone(),
@@ -1132,9 +1198,10 @@ fn recover_lane_from_substrate(
     bead_id: &str,
     agent_name: &str,
     agent: Option<&AgentView>,
+    state: LaneState,
     outcome: abacus::BeadOutcome,
 ) -> Result<Option<abacus::Lane>, String> {
-    if !outcome_allows_lane_recovery(outcome) {
+    if !lane_state_allows_recovery(state, outcome) {
         return Ok(None);
     }
     if let Some(agent) = agent {
@@ -1184,9 +1251,10 @@ fn recover_lane_from_substrate(
     }
 }
 
-/// Reconstruct warm lanes from durable bead state plus Herdr's deterministic
-/// agent names. Returning true means an author is still active, so the serial
-/// drain must sweep again rather than dispatching a second worker.
+/// Reconstruct warm lanes from durable bead state plus their current or
+/// migration-era Herdr identity. Returning true means an author is still
+/// active, so the serial drain must sweep again rather than dispatching a
+/// second worker.
 fn sweep_live_lanes(
     repo: &Path,
     report: &mut MorningReport,
@@ -1228,14 +1296,11 @@ fn sweep_live_lanes(
         }
         let outcome = probe_bead_outcome(repo, &bead_id)?;
         let bead_is_closed = outcome == abacus::BeadOutcome::Completed;
-        // Agent names are intentionally deterministic but lossy: uppercase and
-        // every unsupported byte map to '-', so collisions are theoretically
-        // possible. Real br ids are lowercase and stay inside the accepted
-        // grammar; keep this derivation adjacent to the lookup.
-        let agent_name = sanitize_agent_name(&bead_id);
-        let agent = agents
-            .iter()
-            .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
+        let desired_agent_name = sanitize_agent_name(&bead_id);
+        let agent = resolve_lane_agent(repo, &bead_id, &agents)?;
+        let agent_name = agent
+            .and_then(|agent| agent.name.clone())
+            .unwrap_or(desired_agent_name);
         let worker_active = agent.is_some_and(|agent| agent.agent_status == "working");
         let lane = agent.map_or_else(
             || abacus::Lane {
@@ -1251,6 +1316,7 @@ fn sweep_live_lanes(
             repo,
             SettledLane {
                 bead_id: bead_id.clone(),
+                agent_name,
                 lane,
                 lane_available,
                 outcome,
@@ -1506,18 +1572,19 @@ fn record_drain_settle(
         }
     }
     let state = observation.state;
-    if !settled.lane_available
-        && matches!(
-            state,
-            Some(LaneState::AwaitingReview | LaneState::ReworkRequested | LaneState::Stalled)
-        )
-    {
-        let agent_name = sanitize_agent_name(&settled.bead_id);
-        if let Some(lane) =
-            recover_lane_from_substrate(repo, &settled.bead_id, &agent_name, None, settled.outcome)?
-        {
-            settled.lane = lane;
-            settled.lane_available = true;
+    if !settled.lane_available {
+        if let Some(lane_state) = state {
+            if let Some(lane) = recover_lane_from_substrate(
+                repo,
+                &settled.bead_id,
+                &settled.agent_name,
+                None,
+                lane_state,
+                settled.outcome,
+            )? {
+                settled.lane = lane;
+                settled.lane_available = true;
+            }
         }
     }
     reconcile_review_lifecycle(repo, &settled, &observation, agents, launched_reviewers)?;
@@ -1547,13 +1614,12 @@ fn record_drain_settle(
             .ok_or_else(|| {
                 "ReworkRequested lane is missing its reviewed adjudication".to_owned()
             })?;
-        let agent_name = sanitize_agent_name(&settled.bead_id);
         require_prompt_engaged(
             lane_prompt_rework(
                 repo,
                 &settled.bead_id,
                 &settled.lane,
-                &agent_name,
+                &settled.agent_name,
                 adjudication,
             )?,
             "rework agent",
@@ -1958,11 +2024,12 @@ fn route_selected_existing_lane(
         report_existing_lane_skip(&bead.id);
         return Ok(ExistingLaneDispatch::Skip);
     };
-    let agent_name = sanitize_agent_name(&bead.id);
+    let desired_agent_name = sanitize_agent_name(&bead.id);
     let agents = repo_agents(repo)?;
-    let agent = agents
-        .iter()
-        .find(|agent| agent.name.as_deref() == Some(agent_name.as_str()));
+    let agent = resolve_lane_agent(repo, &bead.id, &agents)?;
+    let agent_name = agent
+        .and_then(|agent| agent.name.clone())
+        .unwrap_or(desired_agent_name);
     let outcome = probe_bead_outcome(repo, &bead.id)?;
     let latest_adjudication =
         latest_reviewed_adjudication(&pull_request.review_facts).map(|adjudication| {
@@ -1991,7 +2058,8 @@ fn route_selected_existing_lane(
 
     let adjudication = latest_reviewed_adjudication(&pull_request.review_facts)
         .ok_or_else(|| "ReworkRequested lane is missing its reviewed adjudication".to_owned())?;
-    let Some(lane) = recover_lane_from_substrate(repo, &bead.id, &agent_name, agent, outcome)?
+    let Some(lane) =
+        recover_lane_from_substrate(repo, &bead.id, &agent_name, agent, state, outcome)?
     else {
         report_existing_lane_skip(&bead.id);
         return Ok(ExistingLaneDispatch::Skip);
@@ -2058,6 +2126,7 @@ fn dispatch_cycle(
     })?;
     Ok(DispatchCycle::Settled(SettledLane {
         bead_id: bead.id,
+        agent_name,
         lane,
         lane_available: true,
         outcome,
@@ -2177,6 +2246,7 @@ mod tests {
             "ab-closed",
             "ab-closed",
             Some(&agent),
+            LaneState::Stalled,
             BeadOutcome::Completed,
         )
         .unwrap();
@@ -2272,11 +2342,77 @@ mod tests {
     }
 
     #[test]
-    fn later_authoritative_outcome_gates_lane_recovery() {
-        assert!(outcome_allows_lane_recovery(BeadOutcome::NeverEngaged));
-        assert!(outcome_allows_lane_recovery(BeadOutcome::Incomplete));
-        assert!(outcome_allows_lane_recovery(BeadOutcome::Blocked));
-        assert!(!outcome_allows_lane_recovery(BeadOutcome::Completed));
+    fn lane_state_and_authoritative_outcome_gate_recovery_at_the_shared_seam() {
+        let states = [
+            LaneState::Authoring,
+            LaneState::Blocked,
+            LaneState::AwaitingReview,
+            LaneState::ReworkRequested,
+            LaneState::Merged,
+            LaneState::Stalled,
+        ];
+        let outcomes = [
+            BeadOutcome::NeverEngaged,
+            BeadOutcome::Incomplete,
+            BeadOutcome::Blocked,
+            BeadOutcome::Completed,
+        ];
+
+        for state in states {
+            for outcome in outcomes {
+                let expected = matches!(
+                    (state, outcome),
+                    (
+                        LaneState::ReworkRequested,
+                        BeadOutcome::NeverEngaged
+                            | BeadOutcome::Incomplete
+                            | BeadOutcome::Completed
+                    ) | (
+                        LaneState::Stalled,
+                        BeadOutcome::NeverEngaged | BeadOutcome::Incomplete
+                    )
+                );
+                assert_eq!(
+                    lane_state_allows_recovery(state, outcome),
+                    expected,
+                    "unexpected recovery decision for {state:?} + {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_agent_lookup_binds_a_truncated_alias_to_its_exact_lane_substrate() {
+        let first_id = "market-brief-package-aywst.14.4.15";
+        let sibling_id = "market-brief-package-aywst.14.4.18";
+        let legacy_name = legacy_sanitize_agent_name(first_id);
+        assert_eq!(legacy_name, legacy_sanitize_agent_name(sibling_id));
+        let agents = vec![AgentView {
+            name: Some(legacy_name),
+            agent_status: "done".into(),
+            cwd: "/repo/lanes/15".into(),
+            workspace_id: "workspace-15".into(),
+            pane_id: "pane-15".into(),
+        }];
+        let worktrees = vec![
+            WorktreeView {
+                branch: format!("lane/{first_id}"),
+                path: "/repo/lanes/15".into(),
+                open_workspace_id: Some("workspace-15".into()),
+            },
+            WorktreeView {
+                branch: format!("lane/{sibling_id}"),
+                path: "/repo/lanes/18".into(),
+                open_workspace_id: Some("workspace-18".into()),
+            },
+        ];
+
+        assert_eq!(
+            find_lane_agent_in_substrate(first_id, &agents, &worktrees)
+                .map(|agent| agent.pane_id.as_str()),
+            Some("pane-15")
+        );
+        assert!(find_lane_agent_in_substrate(sibling_id, &agents, &worktrees).is_none());
     }
 
     #[test]

@@ -122,6 +122,14 @@ pub fn sanitize_agent_name(bead_id: &str) -> String {
     name
 }
 
+/// Reproduce the pre-hash Herdr name for recognizing warm agents created by
+/// older abacus binaries. New agents must use [`sanitize_agent_name`].
+pub fn legacy_sanitize_agent_name(bead_id: &str) -> String {
+    let mut name = normalize_agent_name(bead_id);
+    name.truncate(HERDR_AGENT_NAME_LIMIT);
+    name
+}
+
 /// The evidence `abacus run` uses after Herdr says a lane has settled.
 /// Herdr's agent state is only a wake-up signal; the bead status is the
 /// durable account of whether the worker actually engaged and completed.
@@ -509,6 +517,25 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(first.len(), 32);
         assert_eq!(second.len(), 32);
+    }
+
+    #[test]
+    fn legacy_agent_name_reproduces_the_pre_hash_truncation_for_lookup_only() {
+        let first_id = "market-brief-package-aywst.14.4.15";
+        let sibling_id = "market-brief-package-aywst.14.4.18";
+
+        assert_eq!(
+            legacy_sanitize_agent_name(first_id),
+            "market-brief-package-aywst-14-4-"
+        );
+        assert_eq!(
+            legacy_sanitize_agent_name(first_id),
+            legacy_sanitize_agent_name(sibling_id)
+        );
+        assert_ne!(
+            legacy_sanitize_agent_name(first_id),
+            sanitize_agent_name(first_id)
+        );
     }
 
     #[test]
