@@ -488,7 +488,7 @@ impl LandFixture {
                    for arg in \"$@\"; do\n\
                      case \"$arg\" in lane/*) branch=$arg ;; esac\n\
                    done\n\
-                   printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"resolution-workspace\"}},\"root_pane\":{{\"pane_id\":\"resolution-pane\"}},\"worktree\":{{\"path\":\"{repo}\",\"branch\":\"'$branch'\"}}}}}}'\n\
+                   printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_opened\",\"workspace\":{{\"workspace_id\":\"resolution-workspace\"}},\"root_pane\":{{\"pane_id\":\"resolution-pane\"}},\"worktree\":{{\"path\":\"{repo}\",\"branch\":\"'$branch'\"}}}}}}'\n\
                  elif [ \"$1 $2\" = \"agent start\" ]; then\n\
                    exit 0\n\
                  elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
