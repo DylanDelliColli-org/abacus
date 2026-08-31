@@ -800,6 +800,43 @@ mod tests {
     }
 
     #[test]
+    fn simplicity_heading_is_invisible_to_cycle_bookkeeping() {
+        // ADR 0006 D3 owns this hardcoded canonical heading; changing it requires
+        // cross-artifact review of the simplicity template and parser contract.
+        assert_eq!(
+            heading_cycle("## Simplicity review", VERDICT_HEADING_PREFIX),
+            None
+        );
+
+        let correctness_body = format!("{VERDICT_HEADING_PREFIX}7\n\nVERDICT: NOT REFUTED");
+        let facts = review_comment_facts(&[
+            ReviewComment {
+                body: "## Simplicity review\n\nThe current shape can be reduced.",
+                author_login: "simplicity-reviewer",
+                author_association: "CONTRIBUTOR",
+            },
+            ReviewComment {
+                body: &correctness_body,
+                author_login: "correctness-reviewer",
+                author_association: "CONTRIBUTOR",
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, vec![7]);
+
+        // ADR 0006 D3 forbids this collision because prefix parsing deliberately
+        // ignores trailing text and would otherwise register a phantom cycle.
+        assert_eq!(
+            heading_cycle(
+                "## Adversarial review — cycle 3 — tech debt",
+                VERDICT_HEADING_PREFIX,
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
     fn relayed_verdict_with_attribution_after_body_is_counted() {
         let captured_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
         let body = format!(
