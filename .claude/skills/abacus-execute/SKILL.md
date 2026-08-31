@@ -79,8 +79,10 @@ parked awaiting-review is its nominal result, not a completed drain. Use
 For every lane in `AwaitingReview`, run both evaluators on the same reviewed
 head and in parallel. Give correctness the self-contained manual brief below
 and give simplicity [`simplicity-brief.md`](simplicity-brief.md), with all
-target placeholders resolved. Both evaluators run on every cycle; neither has
-a launch predicate.
+target placeholders resolved. Populate the template's `Prior convergence
+ledger` slot from the current PR's comment-derived ledger, and set it to
+`none` on cycle 1. Both evaluators run on every cycle; neither has a launch
+predicate.
 
 Collect both reports before ruling. Adjudicate them together by section 4:
 the correctness verdict controls the gate, while every simplicity proposal
