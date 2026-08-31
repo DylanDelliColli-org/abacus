@@ -28,7 +28,7 @@ pub const FINDING_DISPOSITION_SEPARATOR: &str = "): ";
 pub const FINDING_ACCEPTED_DISPOSITION: &str = "ACCEPTED";
 pub const FINDING_REJECTED_DISPOSITION: &str = "REJECTED";
 pub const ADJUDICATED_HEAD_PREFIX: &str = "Adjudicated head: ";
-pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER"];
+pub const AUTHORIZED_ADJUDICATOR_ASSOCIATIONS: &[&str] = &["OWNER", "MEMBER", "COLLABORATOR"];
 pub const AUTHORIZED_ADJUDICATOR_LOGINS: &[&str] = &["DylanDelliColli"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +101,17 @@ fn heading_cycle(line: &str, prefix: &str) -> Option<u32> {
     (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
+fn leading_heading_shaped_line(body: &str) -> Option<&str> {
+    let line = body.lines().find(|line| !line.trim().is_empty())?;
+    let marker_count = line.bytes().take_while(|byte| *byte == b'#').count();
+    ((1..=6).contains(&marker_count)
+        && line
+            .as_bytes()
+            .get(marker_count)
+            .is_none_or(u8::is_ascii_whitespace))
+    .then_some(line)
+}
+
 fn parse_adjudicated_head(line: &str) -> Option<String> {
     let head = line.strip_prefix(ADJUDICATED_HEAD_PREFIX)?.trim();
     let head = head
@@ -157,14 +168,14 @@ fn disposition_boundary(remainder: &str) -> bool {
 }
 
 pub fn parse_review_comment(body: &str) -> Result<ParsedReviewComment, String> {
-    let Some(first_line) = body.lines().next() else {
+    let Some(heading) = leading_heading_shaped_line(body) else {
         return Ok(ParsedReviewComment::NotAdjudication);
     };
-    if !first_line.starts_with(ADJUDICATION_HEADING_PREFIX) {
+    if !heading.starts_with(ADJUDICATION_HEADING_PREFIX) {
         return Ok(ParsedReviewComment::NotAdjudication);
     }
-    let cycle = heading_cycle(first_line, ADJUDICATION_HEADING_PREFIX)
-        .ok_or_else(|| format!("invalid adjudication cycle heading: {first_line:?}"))?;
+    let cycle = heading_cycle(heading, ADJUDICATION_HEADING_PREFIX)
+        .ok_or_else(|| format!("invalid adjudication cycle heading: {heading:?}"))?;
     let adjudicated_head = body
         .lines()
         .find_map(parse_adjudicated_head)
@@ -205,8 +216,8 @@ fn is_authorized_adjudicator(comment: ReviewComment<'_>) -> bool {
 pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewCommentFacts, String> {
     let mut facts = ReviewCommentFacts::default();
     for (comment_index, comment) in comments.iter().enumerate() {
-        if let Some(first_line) = comment.body.lines().next() {
-            if let Some(cycle) = heading_cycle(first_line, VERDICT_HEADING_PREFIX) {
+        if let Some(heading) = leading_heading_shaped_line(comment.body) {
+            if let Some(cycle) = heading_cycle(heading, VERDICT_HEADING_PREFIX) {
                 facts.verdict_cycles.push(cycle);
             }
         }
@@ -225,7 +236,7 @@ pub fn review_comment_facts(comments: &[ReviewComment<'_>]) -> Result<ReviewComm
             }
             Ok(ParsedReviewComment::NotAdjudication) => {}
             Err(error) => {
-                let heading = comment.body.lines().next().unwrap_or_default();
+                let heading = leading_heading_shaped_line(comment.body).unwrap_or_default();
                 facts.malformed_adjudications.push(MalformedAdjudication {
                     comment_number: comment_index + 1,
                     heading: heading.to_owned(),
@@ -789,14 +800,114 @@ mod tests {
     }
 
     #[test]
+    fn relayed_verdict_with_attribution_after_body_is_counted() {
+        let captured_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
+        let body = format!(
+            "{captured_verdict}\n\n---\n\n_Relayed by the operator after reviewer sandbox denial._"
+        );
+        let facts = review_comment_facts(&[ReviewComment {
+            body: &body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, vec![1]);
+    }
+
+    #[test]
+    fn verdict_with_leading_blank_lines_is_counted() {
+        let captured_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
+        let body = format!("\n\n{captured_verdict}");
+        let facts = review_comment_facts(&[ReviewComment {
+            body: &body,
+            author_login: "outside-reviewer",
+            author_association: "CONTRIBUTOR",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, vec![1]);
+    }
+
+    #[test]
+    fn earlier_heading_shaped_line_prevents_a_later_verdict_from_counting() {
+        let body = "\n\n## Context\n\n## Adversarial review — cycle 3\n\n**Verdict NOT REFUTED.**";
+        let facts = review_comment_facts(&[ReviewComment {
+            body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn legacy_prose_prefaced_relay_does_not_register_a_cycle() {
+        let body = "Relayed by the operator after reviewer sandbox denial.\n\n## Adversarial review — cycle 3\n\n**Verdict NOT REFUTED.**";
+        let facts = review_comment_facts(&[ReviewComment {
+            body,
+            author_login: "relay-operator",
+            author_association: "OWNER",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn captured_verdict_quoted_shallowly_in_discussion_is_not_counted() {
+        let quoted_verdict = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
+        let body =
+            format!("This discussion quotes a prior verdict only as evidence.\n\n{quoted_verdict}");
+        let facts = review_comment_facts(&[ReviewComment {
+            body: &body,
+            author_login: "discussion-author",
+            author_association: "CONTRIBUTOR",
+        }])
+        .unwrap();
+
+        assert_eq!(facts.verdict_cycles, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn adjudication_with_leading_blank_lines_is_parsed() {
+        let captured = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.source_pr == 26)
+            .unwrap();
+        let body = format!("\n\n{}", captured.body);
+        let ParsedReviewComment::Adjudication(parsed) = parse_review_comment(&body).unwrap() else {
+            panic!("adjudication after leading blank lines was not recognized");
+        };
+
+        assert_eq!(parsed.cycle, captured.cycle);
+        assert_eq!(parsed.verdict, captured.verdict);
+        assert_eq!(parsed.adjudicated_head, captured.head);
+    }
+
+    #[test]
+    fn prose_prefaced_adjudication_is_not_parsed() {
+        let captured = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.source_pr == 26)
+            .unwrap();
+        let body = format!(
+            "This discussion quotes a prior adjudication only as evidence.\n\n{}",
+            captured.body
+        );
+
+        assert_eq!(
+            parse_review_comment(&body).unwrap(),
+            ParsedReviewComment::NotAdjudication
+        );
+    }
+
+    #[test]
     fn adjudication_authorization_ignores_forged_rulings_but_counts_reviewer_headings() {
         let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
             .iter()
             .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
-            .unwrap();
-        let rework = CAPTURED_PRODUCTION_ADJUDICATIONS
-            .iter()
-            .find(|captured| captured.verdict == AdjudicationVerdict::Rework)
             .unwrap();
         let reviewer_body = CAPTURED_PRODUCTION_REVIEWER_VERDICTS[0].1;
         let facts = review_comment_facts(&[
@@ -809,11 +920,6 @@ mod tests {
                 body: accepted.body,
                 author_login: "forger",
                 author_association: "MEMBER",
-            },
-            ReviewComment {
-                body: rework.body,
-                author_login: "DylanDelliColli",
-                author_association: "COLLABORATOR",
             },
             ReviewComment {
                 body: "## Adjudication — cycle not-a-number\n\nmalformed",
@@ -839,6 +945,26 @@ mod tests {
     }
 
     #[test]
+    fn allowlisted_collaborator_adjudication_is_authorized() {
+        let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
+            .unwrap();
+
+        let facts = review_comment_facts(&[ReviewComment {
+            body: accepted.body,
+            author_login: "DylanDelliColli",
+            author_association: "COLLABORATOR",
+        }])
+        .unwrap();
+
+        assert_eq!(
+            facts.latest_adjudication.unwrap().verdict,
+            AdjudicationVerdict::Accepted
+        );
+    }
+
+    #[test]
     fn allowlisted_member_adjudication_is_authorized() {
         let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
             .iter()
@@ -856,6 +982,28 @@ mod tests {
             facts.latest_adjudication.unwrap().verdict,
             AdjudicationVerdict::Accepted
         );
+    }
+
+    #[test]
+    fn non_allowlisted_login_is_never_authorized_regardless_of_association() {
+        let accepted = CAPTURED_PRODUCTION_ADJUDICATIONS
+            .iter()
+            .find(|captured| captured.verdict == AdjudicationVerdict::Accepted)
+            .unwrap();
+
+        for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            let facts = review_comment_facts(&[ReviewComment {
+                body: accepted.body,
+                author_login: "not-the-operator",
+                author_association: association,
+            }])
+            .unwrap();
+
+            assert_eq!(
+                facts.latest_adjudication, None,
+                "non-allowlisted login passed with association {association}"
+            );
+        }
     }
 
     #[test]
@@ -1099,7 +1247,10 @@ mod tests {
         assert_eq!(FINDING_DISPOSITION_SEPARATOR, "): ");
         assert_eq!(FINDING_ACCEPTED_DISPOSITION, "ACCEPTED");
         assert_eq!(FINDING_REJECTED_DISPOSITION, "REJECTED");
-        assert_eq!(AUTHORIZED_ADJUDICATOR_ASSOCIATIONS, &["OWNER", "MEMBER"]);
+        assert_eq!(
+            AUTHORIZED_ADJUDICATOR_ASSOCIATIONS,
+            &["OWNER", "MEMBER", "COLLABORATOR"]
+        );
         assert_eq!(AUTHORIZED_ADJUDICATOR_LOGINS, &["DylanDelliColli"]);
     }
 

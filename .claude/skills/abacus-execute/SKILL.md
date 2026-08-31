@@ -168,8 +168,9 @@ at the current head, then the merge. Nothing else is acceptance.
 ## 4. Adjudication grammar — byte-exact, machine-parsed
 
 Post as a PR comment. The engine parses it; deviation makes it invisible or
-inert. Only the allowlisted operator login with OWNER/MEMBER association
-counts, and the cycle must match a parsed reviewer-verdict cycle on the PR.
+inert. Only the allowlisted operator login with OWNER/MEMBER/COLLABORATOR
+association counts, and the cycle must match a parsed reviewer-verdict cycle
+on the PR.
 
 ```markdown
 ## Adjudication — cycle <k>
@@ -229,9 +230,16 @@ authorization. Protocol:
    `gh pr comment <n> --body-file <file>`.
 2. Attribution goes AFTER the verdict body — a `---` rule, then one italic
    line stating you relayed it.
-3. Never put any line above the `## Adversarial review — cycle <n>`
-   heading. The parser requires the heading as the first body line; a
-   prefaced relay is invisible and the drain relaunches the same cycle.
+3. Keep the `## Adversarial review — cycle <n>` heading as the first nonblank
+   body line. The parser tolerates leading blank lines but rejects any prose
+   before the heading, so a discussion comment quoting a prior verdict does
+   not count as a fresh verdict. Put relay attribution after the verdict body
+   as required above.
+4. A legacy prose-prefaced relay is a protocol violation and deliberately
+   does not register a cycle. The orchestrator recovers by re-posting the
+   verdict with the canonical heading as the first body line and the relay
+   attribution after the verdict body; do not wait for the drain to reinterpret
+   the legacy comment.
 
 Apply the same no-preface relay rule to simplicity. Its first body line must
 be exactly `## Simplicity review`; post no cycle number and no verdict line.

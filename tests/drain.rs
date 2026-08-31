@@ -1506,6 +1506,85 @@ fn owner_rework_without_matching_verdict_never_enters_rework_requested() {
 }
 
 #[test]
+fn relayed_verdict_with_attribution_after_body_does_not_relaunch_the_same_cycle() {
+    let bead_id = "it-relayed-verdict";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adversarial review — cycle 1\n\n**Verdict REFUTED.**\n\n---\n\n_Relayed by the operator after reviewer sandbox denial._","author":{"login":"outside-reviewer"},"authorAssociation":"CONTRIBUTOR"}]}"####;
+    let (output, herdr_calls, _gh_calls) =
+        run_absent_closed_pr_sweep("relayed-verdict", bead_id, "closed", pull_request, false);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the relayed verdict changed the lane classification: {stdout}"
+    );
+    assert!(
+        !herdr_calls.contains("agent start rev-it-relayed-verdict-c1"),
+        "the already-verdicted cycle was relaunched:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn legacy_prose_prefaced_relay_does_not_suppress_the_real_reviewer() {
+    let bead_id = "it-legacy-prefaced-relay";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"Relayed by the operator after reviewer sandbox denial.\n\n## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"outside-reviewer"},"authorAssociation":"CONTRIBUTOR"}]}"####;
+    let (output, herdr_calls, _gh_calls) = run_absent_closed_pr_sweep(
+        "legacy-prose-prefaced-relay",
+        bead_id,
+        "closed",
+        pull_request,
+        false,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the legacy prefaced relay changed the lane classification: {stdout}"
+    );
+    assert!(
+        herdr_calls.contains("agent start rev-it-legacy-prefaced-relay-c1"),
+        "the legacy prefaced relay suppressed the real reviewer:\n{herdr_calls}"
+    );
+}
+
+#[test]
+fn shallow_quoted_verdict_does_not_suppress_the_real_reviewer() {
+    let bead_id = "it-shallow-quote";
+    let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"This discussion quotes a prior verdict only as evidence.\n\n## Adversarial review — cycle 1\n\n**Verdict REFUTED.**","author":{"login":"discussion-author"},"authorAssociation":"CONTRIBUTOR"}]}"####;
+    let (output, herdr_calls, _gh_calls) = run_absent_closed_pr_sweep(
+        "shallow-quoted-verdict",
+        bead_id,
+        "closed",
+        pull_request,
+        false,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("awaiting-review: 1 [{bead_id}")),
+        "the shallow quote changed the lane classification: {stdout}"
+    );
+    assert!(
+        herdr_calls.contains("agent start rev-it-shallow-quote-c1"),
+        "the shallow quote suppressed the real reviewer:\n{herdr_calls}"
+    );
+}
+
+#[test]
 fn malformed_authorized_adjudication_warns_once_and_drain_continues() {
     let bead_id = "it-malformed-adjudication";
     let pull_request = r####"{"state":"OPEN","mergedAt":null,"headRefOid":"review-head","number":42,"comments":[{"body":"## Adjudication — cycle 1\n\nVerdict accepted: REFUTED because rework is required.\n\nAdjudicated head: review-head","author":{"login":"DylanDelliColli"},"authorAssociation":"OWNER"}]}"####;
