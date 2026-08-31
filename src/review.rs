@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::lane::{PromptOutcome, capture, prompt_agent};
-use crate::sanitize_agent_name;
+use crate::sanitize_agent_name_with_reserved_suffix;
 
 pub const BLOCKED_COMMENT_TOKEN: &str = "BLOCKED";
 pub const STATUS_CONTEXT: &str = "adversarial-review";
@@ -450,10 +450,7 @@ pub fn rereview_heading(pr_number: u64, cycle: u32) -> String {
 
 pub fn reviewer_name(bead_id: &str, cycle: u32) -> String {
     let suffix = format!("-c{cycle}");
-    let capacity = 32usize.saturating_sub("rev-".len() + suffix.len());
-    let sanitized = sanitize_agent_name(bead_id);
-    let bead_part: String = sanitized.chars().take(capacity).collect();
-    format!("rev-{bead_part}{suffix}")
+    sanitize_agent_name_with_reserved_suffix(&format!("rev-{bead_id}"), &suffix)
 }
 
 pub fn brief_path(repo: &Path, bead_id: &str, cycle: u32) -> PathBuf {
@@ -1407,5 +1404,27 @@ mod tests {
         }
         assert!(cycle_one.ends_with("-c1"));
         assert!(cycle_two.ends_with("-c2"));
+    }
+
+    #[test]
+    fn reviewer_names_and_brief_paths_distinguish_deep_siblings_in_the_same_cycle() {
+        let repo = Path::new("/checkout/repo");
+        let first_bead = "market-brief-package-aywst.14.4.1";
+        let second_bead = "market-brief-package-aywst.14.4.2";
+
+        let first_name = reviewer_name(first_bead, 1);
+        let second_name = reviewer_name(second_bead, 1);
+
+        assert_ne!(first_name, second_name);
+        for name in [&first_name, &second_name] {
+            let without_cycle = name.strip_suffix("-c1").unwrap();
+            let (_, hash) = without_cycle.rsplit_once('-').unwrap();
+            assert_eq!(hash.len(), 8, "the full hash was not preserved in {name}");
+            assert!(hash.chars().all(|character| character.is_ascii_hexdigit()));
+        }
+        assert_ne!(
+            brief_path(repo, first_bead, 1),
+            brief_path(repo, second_bead, 1)
+        );
     }
 }

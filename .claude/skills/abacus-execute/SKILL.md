@@ -17,22 +17,39 @@ flow wrong in the field (contest 2026-08-20, market-brief 2026-08-21).
 
 ## 1. Role split
 
-Three seats. Do not do another seat's work.
+Three seats, with two operator-selected modes for evaluator launch. Do not do
+another seat's work.
 
 - **Engine** (`abacus run` / `abacus drain` / `abacus land`): dispatches
   workers into lanes, classifies every settle, recovers paste races, launches
-  and reaps adversarial reviewers, parses adjudications, posts the
-  `adversarial-review` commit status (PR head and merge-group commits), reaps
-  merged lanes. Never hand-perform these; if the engine misbehaves, capture
-  evidence and escalate — do not build a manual workaround loop.
+  and reaps evaluators, parses adjudications, posts the `adversarial-review`
+  commit status (PR head and merge-group commits), and reaps merged lanes. In
+  **engine mode**, the engine launches, tracks, and reaps the evaluators.
+  **Engine mode only:** Never hand-perform these; if the engine misbehaves,
+  capture evidence and escalate — do not build a manual workaround loop.
 - **Orchestrator** (you): read verdicts, adjudicate them, reopen beads for
   rework, relay sandbox-denied verdict posts, keep the tracker committed and
-  pushed, escalate anything identity-bearing or configuration-shaped.
+  pushed, escalate anything identity-bearing or configuration-shaped. In
+  manual mode, also launch evaluators and collect their reports by the written
+  procedure below; this exception does not authorize hand-performing any
+  other engine transition.
 - **Operator** (the human): repository configuration (rulesets, branch
   protection, merge queues, CI workflows — ADR 0003 forbids the engine and
   you from mutating these), merge grants, auto-merge opt-in via `land`,
   jot-queue curation, and anything recorded under their identity that they
   have not explicitly delegated.
+
+**Manual mode** is an operator-declared, permanent first-class fallback. The
+operator declares it per repository or per session; the orchestrator never
+infers it. If the active mode is ambiguous, ask the operator before launching
+evaluators. Manual mode authorizes the orchestrator procedure below; it does
+not become an improvised replacement for the rest of the engine.
+
+Both modes obey **mode equivalence at the comment stream**: they produce
+byte-compatible PR artifacts with the same headings, verdict grammar,
+adjudication grammar, and cycle semantics. A mode switch in the middle of a
+review arc therefore strands nothing; the same PR, ledger, and cycle sequence
+continue.
 
 Autonomy ends at the PR unless the repository is opted into overnight
 merging. A merge grant is session-scoped and explicit; never carry one
@@ -56,6 +73,83 @@ abacus drain          # advance the cycle you just adjudicated
 parked awaiting-review is its nominal result, not a completed drain. Use
 `drain` for the loop. Exit codes: 0 nominal (including AwaitingReview),
 3 Blocked/Stalled, 1 engine failure.
+
+### Manual-mode operating loop
+
+For every lane in `AwaitingReview`, run both evaluators on the same reviewed
+head and in parallel. Give correctness the self-contained manual brief below
+and give simplicity [`simplicity-brief.md`](simplicity-brief.md), with all
+target placeholders resolved. Both evaluators run on every cycle; neither has
+a launch predicate.
+
+Collect both reports before ruling. Adjudicate them together by section 4:
+the correctness verdict controls the gate, while every simplicity proposal
+gets a disposition inside the same correctness adjudication comment. On a
+`REFUTED` ruling, reopen the bead with
+`br update <id> --status in_progress` exactly as the engine loop does, then
+let the normal warm-rework route continue. On `NOT REFUTED`, post the
+adjudication and advance the configured merge path. Repeat until the PR
+converges.
+
+## Manual evaluator launch procedure
+
+Create one review worktree per evaluator. Substitute collision-free `NN` and
+`K` identifiers for each workspace, and run from a shell that can reach the
+target repository:
+
+```sh
+herdr worktree create --cwd <repo> --branch review/prNN-cK \
+  --base origin/lane/<bead> --label review-prNN-cK
+```
+
+Read the pane identifier from `.result.root_pane.pane_id`. After creating the
+workspaces, wait **12-14 seconds** for pane readiness before starting either
+agent. The measured `agent_pane_busy` window is **10-20 seconds**, and can be
+longer under load.
+
+Start each agent in its pane. Herdr forwards every argument after `--` to the
+provider CLI:
+
+```sh
+herdr agent start <name> --kind codex --pane <id>
+herdr agent start <name> --kind codex --pane <id> -- --model <m> -c model_reasoning_effort=<e>
+```
+
+Use optional model and effort overrides only when the review calls for them.
+Prefer the equivalent `-m <m>` spelling to `--model <m>`, and use only model
+strings that are safe to encode as shell arguments.
+
+Prompt each evaluator with its completed brief and require engagement proof:
+
+```sh
+herdr agent prompt <name> "<brief>" --wait --until working
+```
+
+`--until working` returns when the prompt is engaged, not when the turn ends;
+that proof closes the paste-race window and makes parallel launch reliable.
+Create both worktrees, start both agents, prompt both agents, and only then
+wait. In the background, run one independent subscription per evaluator:
+
+```sh
+herdr agent wait <name> --until idle --until done --until blocked
+```
+
+If a subscription outlives the expected **10-20 minute** review, switch to a
+bounded set of fresh status probes. A long-lived wait has been observed
+**25 minutes past idle**. Trust `agent_status` and the tracker, never a pane
+read; pane contents are diagnostics, not liveness.
+
+## Evaluator heading registry
+
+- Correctness owns `## Adversarial review — cycle <n>`.
+- Simplicity owns `## Simplicity review`, with no cycle number and no verdict
+  line.
+
+No evaluator other than correctness may post a heading beginning
+`## Adversarial review — cycle `. This is a hard safety rule: the engine
+prefix-matches that heading and ignores trailing text, so a collision creates
+a phantom cycle that can kill a live reviewer, suppress relaunch, and clear an
+unreviewed merge if the phantom is adjudicated.
 
 ## 3. State semantics — the table that prevents misreads
 
@@ -98,6 +192,34 @@ Rules that have burned sessions:
 - One `Finding N (...): ACCEPTED|REJECTED ...` line per verdict finding.
 - A REFUTED adjudication alone does not dispatch rework: reopen the bead.
 
+The fenced grammar stays unchanged. Treat the adjudication as one transaction,
+not a staging point. In the same comment, after the required machine-parsed
+lines, add a labelled `Review transaction:` paragraph naming the surfaces
+examined, material exclusions, and the completeness judgement; the required
+`Adjudicated head:` line supplies the reviewed head.
+
+Add a labelled `Simplicity review:` paragraph naming the disposition of every
+simplicity proposal. It is part of the correctness adjudication comment and
+does not gate the merge; it never gets its own `## Adjudication` heading or a
+cycle number. Every correctness concern and simplicity proposal receives its
+durable disposition in this operation: fold it into current rework, name the
+new or existing bead ID in the comment, or explicitly reject it with reasons.
+Deferred filing is forbidden.
+
+## Convergence controls
+
+Maintain a per-PR class ledger derived from that PR's verdict and adjudication
+comments. Never create a repository-wide ledger file. Record finding classes,
+dispositions, regression probes, and enforcement seams, and generate each
+cycle's evaluator briefs from this durable history.
+
+A finding re-blocks only when its class is new or a recorded regression is
+demonstrably live. At the second instance of a class, move the guard to the
+narrowest seam that covers the whole class and test a sibling. At the third instance,
+stop rework, put the design question to the operator, and retire the warm
+author's accumulated context: start a fresh agent in the same worktree, branch,
+and PR. Always regenerate rework prompts from durable state; never use "address cycle N" as the prompt.
+
 ## 5. Verdict relay — reviewer sandbox denials
 
 Engine-launched reviewers intermittently have their `gh pr comment` denied
@@ -118,6 +240,10 @@ authorization. Protocol:
    verdict with the canonical heading as the first body line and the relay
    attribution after the verdict body; do not wait for the drain to reinterpret
    the legacy comment.
+
+Apply the same no-preface relay rule to simplicity. Its first body line must
+be exactly `## Simplicity review`; post no cycle number and no verdict line.
+Relay the saved body verbatim before adding attribution below it.
 
 ## Manual reviewer brief — self-contained correctness contract
 
@@ -197,6 +323,28 @@ they are the minimum manual brief, not optional guidance:
 > Include the required `## Coverage` statement before ending every verdict
 > with `## Probes`; list the commands or inspections actually performed and
 > their outcomes, including why any broader gate was necessary.
+
+## Field hazards
+
+- **A — provider content-filter trap.** Certain action-verb framing caused six
+  occurrences in one field day: a reviewer wedged mid-run with no verdict.
+  This is not limited to security briefs. Use a remedy ladder: state checks
+  as correctness invariants and use "exercise"; for authentication or
+  credential subject matter, describe checks mechanically with no domain
+  vocabulary. A wedged pane does not recover by re-prompting. Close the
+  workspace and use a fresh pane.
+- **B — goal-language neutrality.** Its canonical wording lives in `ab-xuz`
+  amendment 10 and is quoted in the Manual reviewer brief above. Reuse it;
+  do not fork it.
+- **C — author gates are not reviewer gates.** Never copy focused reviewer-gate
+  trims into author briefs; doing so cost a red CI on an already-reviewed PR.
+- **D — reviewer-filed blocking defects.** When a reviewer invokes the
+  blocking-defect carve-out, fold that work into the rework bead unless the
+  finding outlives the PR.
+- **E — verify before accepting.** Check a blocker's cited mechanics yourself.
+  Reviewers have been structurally right and detail-wrong.
+- **F — durable concern disposition.** The section 4 transaction owns this:
+  dispose of every accepted concern in the same operation, never later.
 
 ## 6. Panes, waiting, and babysitting
 
