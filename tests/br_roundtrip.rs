@@ -13,6 +13,14 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 use abacus::{BeadOutcome, dispatch_prompt, parse_bead_outcome, parse_ready, select_bead};
 
+// br 0.3.2 renders the same fresh-record timestamp race in both plain and
+// aggregate validation output. Test fixtures retry only these exact forms.
+const BR_TIMESTAMP_RACE: &str = "updated_at: cannot be before created_at";
+const BR_TIMESTAMP_RACE_AGGREGATE: &str =
+    r#"field: "updated_at", message: "cannot be before created_at""#;
+const BR_TIMESTAMP_RACE_MAX_ATTEMPTS: usize = 16;
+const BR_TIMESTAMP_RACE_RETRY_DELAY_MS: u64 = 100;
+
 struct TempWorkspace(PathBuf);
 
 impl TempWorkspace {
@@ -71,57 +79,63 @@ fn br(dir: &PathBuf, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-fn br_with_retry<Run, Delay>(args: &[&str], mut run: Run, delay: Delay) -> Output
+fn br_with_retry<Run, Delay>(args: &[&str], mut run: Run, mut delay: Delay) -> Output
 where
     Run: FnMut() -> Output,
-    Delay: FnOnce(Duration),
+    Delay: FnMut(Duration),
 {
-    const TIMESTAMP_RACE: &str = "updated_at: cannot be before created_at";
+    for attempt in 1..=BR_TIMESTAMP_RACE_MAX_ATTEMPTS {
+        let output = run();
+        if output.status.success() {
+            return output;
+        }
 
-    let first = run();
-    if first.status.success() {
-        return first;
-    }
-
-    if String::from_utf8_lossy(&first.stderr).contains(TIMESTAMP_RACE) {
-        delay(Duration::from_millis(100));
-        let retry = run();
+        let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            retry.status.success(),
-            "br {args:?} failed (retried once): {}",
-            String::from_utf8_lossy(&retry.stderr)
+            is_br_timestamp_race(&stderr),
+            "br {args:?} failed: {stderr}"
         );
-        return retry;
+        assert!(
+            attempt < BR_TIMESTAMP_RACE_MAX_ATTEMPTS,
+            "br {args:?} failed after {BR_TIMESTAMP_RACE_MAX_ATTEMPTS} attempts: {stderr}"
+        );
+        delay(Duration::from_millis(BR_TIMESTAMP_RACE_RETRY_DELAY_MS));
     }
 
-    assert!(
-        first.status.success(),
-        "br {args:?} failed: {}",
-        String::from_utf8_lossy(&first.stderr)
-    );
-    first
+    unreachable!("the bounded br retry loop always returns or panics")
+}
+
+fn is_br_timestamp_race(stderr: &str) -> bool {
+    stderr.contains(BR_TIMESTAMP_RACE) || stderr.contains(BR_TIMESTAMP_RACE_AGGREGATE)
 }
 
 #[test]
-fn br_helper_retries_the_timestamp_race_once_after_100_milliseconds() {
+fn br_helper_retries_repeated_timestamp_races_at_100_millisecond_intervals() {
     let attempts = std::cell::Cell::new(0);
-    let observed_delay = std::cell::Cell::new(None);
+    let observed_delays = std::cell::RefCell::new(Vec::new());
 
     let output = br_with_retry(
         &["create", "--title=test"],
         || {
             attempts.set(attempts.get() + 1);
-            if attempts.get() == 1 {
-                shell_output("printf '%s' 'updated_at: cannot be before created_at' >&2; exit 1")
-            } else {
-                shell_output("printf '%s' retried-output")
+            match attempts.get() {
+                1 => shell_output(
+                    "printf '%s' 'updated_at: cannot be before created_at' >&2; exit 1",
+                ),
+                2 => shell_output(
+                    "printf '%s' 'ValidationError { field: \"updated_at\", message: \"cannot be before created_at\" }' >&2; exit 1",
+                ),
+                _ => shell_output("printf '%s' retried-output"),
             }
         },
-        |delay| observed_delay.set(Some(delay)),
+        |delay| observed_delays.borrow_mut().push(delay),
     );
 
-    assert_eq!(attempts.get(), 2);
-    assert_eq!(observed_delay.get(), Some(Duration::from_millis(100)));
+    assert_eq!(attempts.get(), 3);
+    assert_eq!(
+        *observed_delays.borrow(),
+        vec![Duration::from_millis(100); 2]
+    );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "retried-output");
 }
 
@@ -144,12 +158,13 @@ fn br_helper_does_not_retry_a_different_failure() {
     assert_eq!(attempts.get(), 1);
     let message = panic_message(&panic);
     assert!(message.contains("br [\"create\", \"--title=test\"] failed:"));
-    assert!(!message.contains("retried once"));
+    assert!(!message.contains("failed after"));
 }
 
 #[test]
-fn br_helper_marks_a_failed_retry_loudly() {
+fn br_helper_stops_when_a_retry_returns_a_different_failure() {
     let attempts = std::cell::Cell::new(0);
+    let delays = std::cell::Cell::new(0);
 
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         br_with_retry(
@@ -164,15 +179,41 @@ fn br_helper_marks_a_failed_retry_loudly() {
                     shell_output("printf '%s' 'second br failure' >&2; exit 1")
                 }
             },
-            |_| {},
+            |_| delays.set(delays.get() + 1),
         );
     }))
     .expect_err("a failed retry must panic");
 
     assert_eq!(attempts.get(), 2);
+    assert_eq!(delays.get(), 1);
     let message = panic_message(&panic);
-    assert!(message.contains("retried once"));
+    assert!(message.contains("br [\"create\", \"--title=test\"] failed:"));
     assert!(message.contains("second br failure"));
+    assert!(!message.contains("failed after"));
+}
+
+#[test]
+fn br_helper_bounds_repeated_timestamp_races_at_sixteen_attempts() {
+    let attempts = std::cell::Cell::new(0);
+    let delays = std::cell::Cell::new(0);
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        br_with_retry(
+            &["create", "--title=test"],
+            || {
+                attempts.set(attempts.get() + 1);
+                shell_output("printf '%s' 'updated_at: cannot be before created_at' >&2; exit 1")
+            },
+            |_| delays.set(delays.get() + 1),
+        );
+    }))
+    .expect_err("the bounded timestamp retry must eventually panic");
+
+    assert_eq!(attempts.get(), 16);
+    assert_eq!(delays.get(), 15);
+    let message = panic_message(&panic);
+    assert!(message.contains("failed after 16 attempts"));
+    assert!(message.contains(BR_TIMESTAMP_RACE));
 }
 
 fn shell_output(script: &str) -> std::process::Output {
@@ -263,6 +304,76 @@ fn find_on_path(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|path| find_on_supplied_path(program, &path))
 }
 
+#[cfg(unix)]
+fn install_retrying_br_wrapper_at(wrapper: &Path, real_br: &Path) {
+    // Child abacus and fake-herdr processes cannot call the Rust helper above,
+    // so their PATH gets an executable form of the same bounded contract.
+    let sleep = find_on_path("sleep").expect("sleep must be on the base PATH");
+    let stderr_path = wrapper.with_extension("retry-stderr");
+    let script = format!(
+        r#"#!/bin/sh
+attempt=1
+stderr_file='{stderr_path}'.$$
+while [ "$attempt" -le {max_attempts} ]; do
+  : > "$stderr_file"
+  '{real_br}' "$@" 2> "$stderr_file"
+  status=$?
+  stderr=$(while IFS= read -r line || [ -n "$line" ]; do printf '%s\n' "$line"; done < "$stderr_file")
+  if [ "$status" -eq 0 ]; then
+    if [ -n "$stderr" ]; then printf '%s\n' "$stderr" >&2; fi
+    exit 0
+  fi
+  case "$stderr" in
+    *'{timestamp_race}'*|*'{timestamp_race_aggregate}'*) ;;
+    *) printf '%s\n' "$stderr" >&2; exit "$status" ;;
+  esac
+  if [ "$attempt" -eq {max_attempts} ]; then
+    printf 'br retry exhausted after %s attempts: %s\n' "$attempt" "$stderr" >&2
+    exit "$status"
+  fi
+  attempt=$((attempt + 1))
+  '{sleep}' 0.{delay_ms:03}
+done
+"#,
+        stderr_path = stderr_path.display(),
+        max_attempts = BR_TIMESTAMP_RACE_MAX_ATTEMPTS,
+        real_br = real_br.display(),
+        timestamp_race = BR_TIMESTAMP_RACE,
+        timestamp_race_aggregate = BR_TIMESTAMP_RACE_AGGREGATE,
+        sleep = sleep.display(),
+        delay_ms = BR_TIMESTAMP_RACE_RETRY_DELAY_MS,
+    );
+    std::fs::write(wrapper, script).unwrap();
+    let mut permissions = std::fs::metadata(wrapper).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(wrapper, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn install_retrying_br_wrapper(fake_bin: &Path) -> PathBuf {
+    let wrapper = fake_bin.join("br");
+    let real_br = find_on_path("br").expect("br must be on the base PATH");
+    install_retrying_br_wrapper_at(&wrapper, &real_br);
+    wrapper
+}
+
+#[cfg(unix)]
+fn path_with_retrying_br(fake_bin: &Path) -> std::ffi::OsString {
+    if fake_bin.join("br").exists() {
+        let retry_wrapper = fake_bin.join("br-with-retry");
+        let real_br = find_on_path("br").expect("br must be on the base PATH");
+        install_retrying_br_wrapper_at(&retry_wrapper, &real_br);
+    } else {
+        install_retrying_br_wrapper(fake_bin);
+    }
+    std::env::join_paths(
+        std::iter::once(fake_bin.to_path_buf()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").expect("test PATH must be set"),
+        )),
+    )
+    .unwrap()
+}
+
 macro_rules! require_br {
     () => {
         if find_on_path("br").is_none() {
@@ -270,6 +381,41 @@ macro_rules! require_br {
             return;
         }
     };
+}
+
+#[cfg(unix)]
+#[test]
+fn retrying_br_wrapper_composes_real_claim_comment_and_close() {
+    require_br!();
+    let ws = TempWorkspace::new("retrying-br-lifecycle");
+    br(&ws.0, &["init", "--prefix", "it"]);
+    let bead_id = br(&ws.0, &["create", "--title=retrying lifecycle", "--silent"])
+        .trim()
+        .to_owned();
+
+    let fake_bin = ws.0.join("fake-bin");
+    std::fs::create_dir(&fake_bin).unwrap();
+    let wrapper = install_retrying_br_wrapper(&fake_bin);
+    for args in [
+        vec!["update", bead_id.as_str(), "--claim"],
+        vec!["comments", "add", bead_id.as_str(), "fixture lifecycle"],
+        vec!["close", bead_id.as_str()],
+    ] {
+        let output = Command::new(&wrapper)
+            .args(&args)
+            .current_dir(&ws.0)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "retrying br {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let state = br(&ws.0, &["show", &bead_id, "--json"]);
+    assert_eq!(parse_bead_outcome(&state).unwrap(), BeadOutcome::Completed);
+    assert!(state.contains("fixture lifecycle"), "state: {state}");
 }
 
 #[cfg(unix)]
@@ -310,10 +456,7 @@ fn drain_enumerates_a_closed_bead_from_its_local_lane_branch() {
     std::fs::create_dir(&fake_bin).unwrap();
     install_empty_herdr_stub(&fake_bin);
     install_no_pr_gh_stub(&fake_bin);
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["drain", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -362,7 +505,6 @@ fn drain_skips_a_real_deferred_bead_with_a_local_lane_branch() {
 
     let fake_bin = ws.0.join("fake-bin");
     std::fs::create_dir(&fake_bin).unwrap();
-    let real_br = find_on_path("br").expect("guarded by require_br");
     let br_calls = ws.0.join("br-calls");
     let fake_br = fake_bin.join("br");
     std::fs::write(
@@ -370,7 +512,7 @@ fn drain_skips_a_real_deferred_bead_with_a_local_lane_branch() {
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
             br_calls.display(),
-            real_br.display(),
+            fake_bin.join("br-with-retry").display(),
         ),
     )
     .unwrap();
@@ -390,7 +532,7 @@ fn drain_skips_a_real_deferred_bead_with_a_local_lane_branch() {
                printf '%s\\n' '{{\"result\":{{\"type\":\"worktree_created\",\"workspace\":{{\"workspace_id\":\"ready-workspace\"}},\"root_pane\":{{\"pane_id\":\"ready-pane\"}},\"worktree\":{{\"path\":\"{}\",\"branch\":\"lane/{}\"}}}}}}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{}'\n\
-               br close '{}'\n\
+               br close '{}' || exit $?\n\
                printf 'worker settled\\n'\n\
              fi\n",
             herdr_calls.display(),
@@ -406,10 +548,7 @@ fn drain_skips_a_real_deferred_bead_with_a_local_lane_branch() {
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
     install_no_pr_gh_stub(&fake_bin);
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["drain", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -656,6 +795,8 @@ fn abacus_run_skips_an_operator_seat_bead() {
     let restricted_bin = ws.0.join("restricted-bin");
     std::fs::create_dir(&restricted_bin).unwrap();
     let real_br = find_on_path("br").expect("guarded by require_br");
+    let retrying_br = restricted_bin.join("br-with-retry");
+    install_retrying_br_wrapper_at(&retrying_br, &real_br);
     let br_calls = ws.0.join("br-calls");
     let br_wrapper = restricted_bin.join("br");
     std::fs::write(
@@ -663,7 +804,7 @@ fn abacus_run_skips_an_operator_seat_bead() {
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
             br_calls.display(),
-            real_br.display(),
+            retrying_br.display(),
         ),
     )
     .unwrap();
@@ -776,7 +917,7 @@ fn abacus_drain_dispatches_every_ready_bead_then_exits_zero() {
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                IFS= read -r bead_id < '{}'\n\
                cd '{}'\n\
-               br close \"$bead_id\"\n\
+               br close \"$bead_id\" || exit $?\n\
                printf 'worker settled\\n'\n\
              fi\n",
             herdr_calls.display(),
@@ -799,10 +940,7 @@ fn abacus_drain_dispatches_every_ready_bead_then_exits_zero() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_gh, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["drain", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -853,11 +991,7 @@ fn abacus_run_claims_the_selected_bead_before_opening_its_lane() {
 
     let restricted_bin = ws.0.join("restricted-bin");
     std::fs::create_dir(&restricted_bin).unwrap();
-    symlink(
-        find_on_path("br").expect("guarded by require_br"),
-        restricted_bin.join("br"),
-    )
-    .unwrap();
+    install_retrying_br_wrapper(&restricted_bin);
     symlink(
         find_on_path("git").expect("git must be on the base PATH"),
         restricted_bin.join("git"),
@@ -953,8 +1087,8 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
                  exit 1\n\
                fi\n\
                cd '{}'\n\
-               br update '{}' --claim\n\
-               br close '{}'\n\
+               br update '{}' --claim || exit $?\n\
+               br close '{}' || exit $?\n\
              fi\n",
             calls.display(),
             lane_json,
@@ -969,10 +1103,7 @@ fn abacus_run_sanitizes_only_the_herdr_name_for_a_dotted_child_id() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1067,7 +1198,7 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{}'\n\
-               br close '{}'\n\
+               br close '{}' || exit $?\n\
              fi\n",
             calls.display(),
             lane_json,
@@ -1080,10 +1211,7 @@ fn abacus_run_uses_the_discovered_default_branch_in_the_worker_prompt() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1177,7 +1305,7 @@ fn abacus_run_discovers_the_remote_default_without_a_local_origin_head() {
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{}'\n\
-               br close '{}'\n\
+               br close '{}' || exit $?\n\
              fi\n",
             calls.display(),
             lane_json,
@@ -1190,10 +1318,7 @@ fn abacus_run_discovers_the_remote_default_without_a_local_origin_head() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1300,10 +1425,7 @@ fn abacus_run_probes_the_dispatching_store_instead_of_a_stale_lane_tracker() {
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
     install_no_pr_gh_stub(&fake_bin);
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1356,8 +1478,8 @@ fn abacus_run_tracker_completed_short_circuits_mixed_meter_pane_recovery() {
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{}'\n\
-               br update '{}' --claim\n\
-               br close '{}'\n\
+               br update '{}' --claim || exit $?\n\
+               br close '{}' || exit $?\n\
                printf '{{\"result\":{{\"type\":\"agent_prompted\",\"agent\":{{\"agent_status\":\"done\"}}}}}}\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
                printf '• Worker completed and reported the literal diagnostic Context 0%% used\\n\\n  gpt-5.6-sol high · Context 24%% used\\n'\n\
@@ -1390,10 +1512,7 @@ fn abacus_run_tracker_completed_short_circuits_mixed_meter_pane_recovery() {
         std::fs::set_permissions(fake_program, permissions).unwrap();
     }
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1482,8 +1601,8 @@ fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
                printf '%s\\n' '{}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{}'\n\
-               br update '{}' --claim\n\
-               br close '{}'\n\
+               br update '{}' --claim || exit $?\n\
+               br close '{}' || exit $?\n\
              elif [ \"$1 $2\" = \"worktree remove\" ] && [ \"$5\" != \"--force\" ]; then\n\
                printf '%s\\n' '{}' >&2\n\
                exit 1\n\
@@ -1501,10 +1620,7 @@ fn abacus_run_warns_and_forces_removal_when_a_completed_lane_is_dirty() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1584,8 +1700,8 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
                  exit 1\n\
                fi\n\
                cd '{}'\n\
-               br update '{}' --claim\n\
-               br close '{}'\n\
+               br update '{}' --claim || exit $?\n\
+               br close '{}' || exit $?\n\
              fi\n",
             lane_json,
             prompt_attempts.display(),
@@ -1600,10 +1716,7 @@ fn abacus_run_retries_once_when_the_first_agent_prompt_stalls() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1673,7 +1786,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
             probe_attempts.display(),
             failed_probe.display(),
             failed_probe.display(),
-            find_on_path("br").expect("guarded by require_br").display(),
+            fake_bin.join("br-with-retry").display(),
         ),
     )
     .unwrap();
@@ -1687,9 +1800,9 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
                printf 'attempt\\n' >> '{}'\n\
                cd '{}'\n\
                if [ \"$(wc -l < '{}')\" -eq 1 ]; then\n\
-                 br update '{}' --status open\n\
+                 br update '{}' --status open || exit $?\n\
                else\n\
-                 br close '{}'\n\
+                 br close '{}' || exit $?\n\
                fi\n\
                : > '{}'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
@@ -1718,10 +1831,7 @@ fn abacus_run_retries_a_transient_outcome_probe_without_repasting_the_prompt() {
         std::fs::set_permissions(fake_program, permissions).unwrap();
     }
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1803,7 +1913,7 @@ fn abacus_run_nudges_a_meterless_baseline_three_frame_late_paste() {
                fi\n\
              elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
                cd '{}'\n\
-               br close '{}'\n\
+               br close '{}' || exit $?\n\
              elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
                printf 'agent transition observed\\n'\n\
              fi\n",
@@ -1822,10 +1932,7 @@ fn abacus_run_nudges_a_meterless_baseline_three_frame_late_paste() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -1944,7 +2051,7 @@ fn abacus_run_nudges_when_post_settle_meter_temporarily_disappears() {
                fi\n\
              elif [ \"$1 $2\" = \"agent send-keys\" ]; then\n\
                cd '{}'\n\
-               br close '{}'\n\
+               br close '{}' || exit $?\n\
              elif [ \"$1 $2\" = \"agent wait\" ]; then\n\
                printf 'agent transition observed\\n'\n\
              fi\n",
@@ -1963,10 +2070,7 @@ fn abacus_run_nudges_when_post_settle_meter_temporarily_disappears() {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -2050,7 +2154,7 @@ fn abacus_run_nudges_an_empty_zero_context_composer_then_classifies_never_engage
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                printf 'attempt\\n' >> '{}'\n\
                cd '{}'\n\
-               br update '{}' --status open\n\
+               br update '{}' --status open || exit $?\n\
                printf '{{\"result\":{{\"type\":\"agent_prompted\",\"agent\":{{\"agent_status\":\"done\"}}}}}}\\n'\n\
              elif [ \"$1 $2\" = \"pane read\" ]; then\n\
                printf '› Ask Codex to do anything\\n\\n  gpt-5.6-sol high · Context 0%% used\\n'\n\
@@ -2073,10 +2177,7 @@ fn abacus_run_nudges_an_empty_zero_context_composer_then_classifies_never_engage
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
     install_no_pr_gh_stub(&fake_bin);
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -2179,9 +2280,9 @@ fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
                IFS= read -r bead_id < '{current_bead}'\n\
                cd '{root}'\n\
                if [ \"$bead_id\" = \"{first}\" ]; then\n\
-                 br comments add \"$bead_id\" 'BLOCKED: fixture reason'\n\
+                 br comments add \"$bead_id\" 'BLOCKED: fixture reason' || exit $?\n\
                else\n\
-                 br close \"$bead_id\"\n\
+                 br close \"$bead_id\" || exit $?\n\
                fi\n\
              fi\n",
             calls = herdr_calls.display(),
@@ -2202,10 +2303,7 @@ fn abacus_drain_classifies_a_real_blocked_comment_and_continues() {
         std::fs::set_permissions(fake_program, permissions).unwrap();
     }
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["drain", ws.0.to_str().unwrap()])
         .env("PATH", path)
@@ -2285,8 +2383,8 @@ fn abacus_run_classifies_a_superseded_blocked_comment_as_stalled() {
                printf '%s\\n' '{lane_json}'\n\
              elif [ \"$1 $2\" = \"agent prompt\" ]; then\n\
                cd '{root}'\n\
-               br comments add '{bead_id}' 'BLOCKED: temporary fixture'\n\
-               br comments add '{bead_id}' 'resuming'\n\
+               br comments add '{bead_id}' 'BLOCKED: temporary fixture' || exit $?\n\
+               br comments add '{bead_id}' 'resuming' || exit $?\n\
              fi\n",
             lane_json = lane_json,
             root = ws.0.display(),
@@ -2299,10 +2397,7 @@ fn abacus_run_classifies_a_superseded_blocked_comment_as_stalled() {
     std::fs::set_permissions(&fake_herdr, permissions).unwrap();
     install_no_pr_gh_stub(&fake_bin);
 
-    let path = std::env::join_paths(std::iter::once(fake_bin).chain(std::env::split_paths(
-        &std::env::var_os("PATH").expect("test PATH must be set"),
-    )))
-    .unwrap();
+    let path = path_with_retrying_br(&fake_bin);
     let out = Command::new(env!("CARGO_BIN_EXE_abacus"))
         .args(["run", ws.0.to_str().unwrap()])
         .env("PATH", path)
