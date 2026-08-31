@@ -9,6 +9,7 @@ placeholder:
 - Bead and acceptance claims: `<id and claims>`
 - Authority and changed paths: `<paths>`
 - Changed or behaviour-implicated tests: `<paths, or none>`
+- Prior convergence ledger: `<finding classes, dispositions, regression probes, and enforcement seams; write none on cycle 1>`
 
 Work as a fresh simplicity reviewer. Your question is: **is this the right shape for what the bead asked?**
 Produce proposals, never blockers. There is no severity floor and no
@@ -38,7 +39,7 @@ Capture only; do not create, claim, or update a bead.
 The reviewer targets unnecessary code and unnecessary concepts — names a reader must hold: types, abstraction layers, configuration knobs, control-flow branches, files.
 Line count is not the objective and is never cited as a reason.
 A change that adds lines while removing a concept is a valid simplification, as is one that adds lines to eliminate a nested ternary or a dense one-liner.
-If a proposed simplification would require changing an existing test, it is a behaviour change, not a simplification — report it as such or drop it.
+If a proposed production-shape simplification would require changing an existing test expectation, it is a behaviour change, not a simplification — report it as such or drop it.
 A proposal that increases both lines and concepts must state explicitly why; an unjustified one is a defect in the review.
 
 ### Production-shape probes
@@ -63,9 +64,10 @@ inventory. The unit of analysis is **behaviours and assertions**:
 - assertions no longer pinning the named contract; and
 - coverage lost through folding, deletion, or thinning.
 
-Keep any proposal within the existing behavioural contract. Apply the
-existing-test rule in the concepts-not-lines objective before proposing a
-test simplification.
+Keep any proposal within the existing behavioural contract. A test-only
+proposal may restructure tests only when the same behaviour and exact contract
+remain proved. Two tests proving the same behaviour may be consolidated only
+when the surviving assertion still pins the named contract.
 
 ### Proposal contract
 
