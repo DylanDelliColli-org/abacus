@@ -44,8 +44,7 @@ guarantee at proportionate cost, and does the suite still prove every live
 behaviour the diff touches. Heading: `## Test-quality review` — first body
 line, no cycle number, no verdict line; engine-inert by the ADR 0006 D3
 collision rule. Adjudicated inside the correctness adjudication comment as
-a second labelled paragraph, symmetric with simplicity's. ADR 0006's
-admission rules and single-gate rule stand for any fourth seat.
+a second labelled paragraph, symmetric with simplicity's.
 
 **D2 — Methodology sections are canonical brief content, every seat, every
 tier.** The experiment's central finding: an evidence *bar* does not elicit
@@ -70,10 +69,8 @@ not developed.
 
 **D4 — Model and effort selection.** All three seats run `gpt-5.6-sol` at
 `medium` reasoning with methodology briefs, selected per launch via the
-herdr `AGENT_ARG` passthrough. Basis: full adjudicated-blocker recall on
-every head tested, one novel true positive the Sol-tier baseline missed,
-zero manufactured findings at any tier in the program, and a full-stack
-wall-clock of 9m25s versus 10–20 minutes for a single Sol-tier review.
+herdr `AGENT_ARG` passthrough. Basis: full adjudicated-blocker recall and zero manufactured
+findings across the program (record, correctness arm and wave 7).
 `gpt-5.6-luna` is disqualified for standing seats (model-shaped recall
 floor on engine-internals targets at any effort); it may serve as a
 supplementary diverse lens under ADR 0006's admission rules only.
@@ -81,8 +78,7 @@ supplementary diverse lens under ADR 0006's admission rules only.
 **D5 — The missed-blocker tripwire.** The small-n caveats in the
 observation record are corrected by observation, not insurance: any
 post-merge defect that review should have caught triggers a config
-re-evaluation for the affected seat (first candidate: Sol-high, the
-untested middle). This is the MVP-first ruling applied to model selection.
+re-evaluation for the affected seat. This is the MVP-first ruling applied to model selection.
 
 **D6 — The evidence record is binding context.** The observation record in
 `docs/compatibility/` is the justification of record for D1–D5. Future
@@ -97,8 +93,4 @@ count rises; the operator reads three reports and disposes of two advisory
 paragraphs inside the existing adjudication act. The known residuals ride
 on the record: the test seat's deepest enumeration trails the Sol-tier
 shadow benchmark on the hardest target, and every conclusion is small-n
-until real drains accumulate. The contract work this ADR implies — the
-test-quality brief as a shipped template, the methodology sections landed
-in the canonical briefs, and the heading-registry addition — is tracked as
-implementation beads under the `ab-ljn` epic's successor work, not
-performed by this document.
+until real drains accumulate.
