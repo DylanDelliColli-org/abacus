@@ -21,4 +21,7 @@ Every managed document appears here exactly once.
 | docs/adr/0004-foreign-repo-onboarding.md | proposed architecture decision: foreign-repository onboarding, first instance market-brief-package |
 | docs/adr/0005-lane-lifecycle-v2.md | proposed architecture decision: sweep-based drain, adversarial review gate, warm lanes |
 | docs/adr/0006-pr-evaluator-stack.md | proposed architecture decision: two PR evaluators, one gate, manual-mode fallback |
+| docs/adr/0007-three-seat-stack-and-model-selection.md | proposed architecture decision: three-seat evaluator stack, methodology briefs, Sol-medium selection |
+| docs/compatibility/INDEX.md | index of the dated observation records |
+| docs/compatibility/2026-08-31-reviewer-model-selection-experiment.md | observation record: the seven-wave reviewer model/effort experiment behind ADR 0007 |
 | docs/history/INDEX.md | archive pointer index for retired planning records |
