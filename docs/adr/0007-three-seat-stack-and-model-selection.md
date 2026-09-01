@@ -6,7 +6,10 @@ lifecycle: active
 # ADR 0007: Three-seat evaluator stack, and reviewer model/effort selection
 
 - **Status:** **proposed** 2026-09-01 — drafted at the operator's stack-lock
-  confirmation; pending the design-document review gate.
+  confirmation. Review trail: bloat review (fresh Codex context, seven
+  cuts, operator-disposed — four applied, one modified, two rejected with
+  the operator's reasons) and spec validation (second fresh Codex context,
+  four findings, all applied as faithfulness fixes same day).
 - **Date:** 2026-09-01
 - **Deciders:** operator (the lock, the promotion, both mid-experiment
   hypotheses that redirected the program), orchestrator session (record and
@@ -30,8 +33,9 @@ prescribing execution *methodology* rather than only an evidence bar — and
 a final wave validated the full three-seat stack at the cheaper config
 against banked ground truth. The operator's resulting thesis, which the
 data supports on its sample: more reviewers with narrower scopes at lower
-effort, methodology-briefed, at equal-or-better detection and a fraction of
-cost.
+effort, methodology-briefed, with full adjudicated-blocker recall on the
+tested sample at materially lower configured effort and measured
+wall-clock.
 
 ## Decision
 
@@ -44,7 +48,10 @@ guarantee at proportionate cost, and does the suite still prove every live
 behaviour the diff touches. Heading: `## Test-quality review` — first body
 line, no cycle number, no verdict line; engine-inert by the ADR 0006 D3
 collision rule. Adjudicated inside the correctness adjudication comment as
-a second labelled paragraph, symmetric with simplicity's.
+a labelled paragraph beginning "The parallel test-quality review is
+adjudicated separately and does not gate this merge", placed alongside the
+simplicity paragraph — after the finding lines, before the Adjudicated
+head line — so manual and engine artifacts stay byte-compatible.
 
 **D2 — Methodology sections are canonical brief content, every seat, every
 tier.** The experiment's central finding: an evidence *bar* does not elicit
@@ -54,7 +61,7 @@ execution methodology (build the reviewed binary; PATH-first fake
 findings graded on observed traces). The simplicity brief carries
 concept-to-guarantee tracing, the claims-vs-tree audit with parent diffs on
 merge commits, and execute-don't-estimate. The test-quality brief carries
-the six-method procedure validated in wave 7 (behaviour map, distinctness
+the six-method procedure exercised in wave 7 (behaviour map, distinctness
 map, label-honesty audit, reachability check, deleted-assertion accounting,
 unconditional measurement). Methodology is a precondition of D3's model
 selection, not a preference.
@@ -72,7 +79,7 @@ not developed.
 herdr `AGENT_ARG` passthrough. Basis: full adjudicated-blocker recall and zero manufactured
 findings across the program (record, correctness arm and wave 7).
 `gpt-5.6-luna` is disqualified for standing seats (model-shaped recall
-floor on engine-internals targets at any effort).
+floor on engine-internals targets at both tested efforts).
 
 **D5 — The missed-blocker tripwire.** The small-n caveats in the
 observation record are corrected by observation, not insurance: any
@@ -87,8 +94,8 @@ measurement, never argues past it.
 
 ## Consequences
 
-Per-cycle review cost drops materially in tokens and wall-clock while seat
-count rises; the operator reads three reports and disposes of two advisory
+Per-cycle review cost drops materially in measured wall-clock and in
+configured reasoning effort while seat count rises; the operator reads three reports and disposes of two advisory
 paragraphs inside the existing adjudication act. The known residuals ride
 on the record: the test seat's deepest enumeration trails the Sol-tier
 shadow benchmark on the hardest target, and every conclusion is small-n
