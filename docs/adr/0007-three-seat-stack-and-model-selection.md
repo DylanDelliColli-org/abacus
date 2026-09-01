@@ -72,8 +72,7 @@ not developed.
 herdr `AGENT_ARG` passthrough. Basis: full adjudicated-blocker recall and zero manufactured
 findings across the program (record, correctness arm and wave 7).
 `gpt-5.6-luna` is disqualified for standing seats (model-shaped recall
-floor on engine-internals targets at any effort); it may serve as a
-supplementary diverse lens under ADR 0006's admission rules only.
+floor on engine-internals targets at any effort).
 
 **D5 — The missed-blocker tripwire.** The small-n caveats in the
 observation record are corrected by observation, not insurance: any
