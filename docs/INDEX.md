@@ -24,4 +24,8 @@ Every managed document appears here exactly once.
 | docs/adr/0007-three-seat-stack-and-model-selection.md | proposed architecture decision: three-seat evaluator stack, methodology briefs, Sol-medium selection |
 | docs/compatibility/INDEX.md | index of the dated observation records |
 | docs/compatibility/2026-08-31-reviewer-model-selection-experiment.md | observation record: the seven-wave reviewer model/effort experiment behind ADR 0007 |
+| docs/compatibility/2026-09-08-fantasy-execution-experiment.md | execution comparison protocol, fixed inputs and measurement boundary |
+| docs/compatibility/2026-09-08-fantasy-herdr-reference.md | shared installed-tool reference for the experiment leaders |
+| docs/compatibility/2026-09-08-fantasy-leader-a.md | manual abacus execution launch contract for arm A |
+| docs/compatibility/2026-09-08-fantasy-leader-b.md | agent-directed execution and independent-review contract for arm B |
 | docs/history/INDEX.md | archive pointer index for retired planning records |
