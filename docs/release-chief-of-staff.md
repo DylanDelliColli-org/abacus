@@ -14,7 +14,9 @@ repair strategy within the agreed requirements and authority.
 
 Use Herdr agents when helpful. Give each writing agent its own worktree and
 bounded ownership, the activated task, pinned packet, relevant requirements,
-and a route back to you. Discover live identities and installed Herdr controls;
+and a route back to you. Carry bead and attempt identity in the launch prompt
+and retain the repo's lane naming convention for recovery. Discover live
+identities and installed Herdr controls;
 do not infer completion from an idle pane or send input into an unresolved menu.
 Honor the selected workspace and existing resource/model constraints. This
 packet sets no universal worker count or model configuration.
@@ -44,6 +46,8 @@ revision and first-ready time. Dispatch a fresh non-author evaluator with
 [the release-review contract](release-review.md), product outcomes, relevant
 constraints, artifact/setup details and known risks. You may reuse that evaluator
 for repairs; there is no fixed three-seat cycle or mandatory report grammar.
+State in the dispatch prompt itself that this is read-only review, not separately
+bead-tracked work: no beads, branches, implementation edits or commits.
 
 The evaluator must assess the product, not merely endorse the plan. Resolve
 material findings with evidence. Turn reproduced failures into regression tests,
@@ -65,7 +69,10 @@ stay with you. Escalate product conflicts, unavailable authority or real blocker
 not every reviewer disagreement or a fixed number of engineering iterations.
 
 Push authorized scoped work; never merge or deploy merely because review passed.
+Before any deployment, record a recovery plan executable within approved authority;
+resolve missing recovery authority first. Engineering judgment owns the plan,
+not a new mandatory operator sign-off when existing authority already covers it.
 After an authorized deployment, verify safe smoke checks in the deployed
-environment and follow the approved recovery plan if necessary. Code rollback
+environment and follow that recovery plan if necessary. Code rollback
 does not necessarily reverse data or external side effects. No deployment is
 required merely to test this workflow's first version.

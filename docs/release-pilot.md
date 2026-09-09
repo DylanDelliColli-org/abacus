@@ -32,13 +32,18 @@ task/epic bead, product acceptance source, integration branch, Herdr workspace,
 and merge/deployment authority on the target task. Keep runtime data, credentials
 and browser caches isolated; a worktree does not isolate shared services or trackers.
 
+Acceptance must name operator-approved product outcomes, not just implementation
+task completion. Pin their revision or snapshot before the first evaluation;
+record later changes with the relevant product authority and preserve the original
+baseline and results. No separate document is required if the source already does this.
+
 Have the operator approve that concrete scope with this instruction, completed
 with actual values before sending it to the chief and its delegates:
 
 > For repository [absolute path], task [bead], integration branch [branch],
 > use the release-led pilot packet at [absolute path], commit [full SHA].
 > Read docs/release-pilot.md and docs/release-chief-of-staff.md there.
-> Product acceptance is [source].
+> Product acceptance is [approved outcome source and revision/snapshot].
 > Use Herdr workspace [ID] and the existing resource/model settings.
 > Within this task, these instructions supersede inherited abacus execution
 > requirements for fixed per-PR reviewer panels, adjudication grammar, and
@@ -46,6 +51,9 @@ with actual values before sending it to the chief and its delegates:
 > product requirements, planning approvals, test obligations, tracker/capture
 > policy, permissions, isolation, or merge/deployment restrictions.
 > Approved merge/deployment authority is [existing authority or none].
+> Required merge gates are [including adversarial-review if required]; their
+> compliant completion route is [approved route, or stop at PR for operator action].
+> If deployment is included, recovery is [plan executable within approved authority].
 > No other repository or task is opted in.
 
 This is a task-scoped user instruction, not authority the agent grants itself.
@@ -83,7 +91,8 @@ until actual use establishes what needs fixing.
 ## Withdraw or finish
 
 Stop new pilot dispatches, let active work reach a safe checkpoint, and record
-its commits, outstanding findings and ownership on the target bead. Preserve
+its commits, outstanding findings and ownership on the target bead. Record
+withdrawal on each in-progress child too, so resumed workers see it. Preserve
 worktrees and evidence. Remove only this task's activation on operator direction;
 do not kill agents, discard work, revert production, or rewrite global settings.
 Existing work does not become accepted merely because the pilot ends. Applying
