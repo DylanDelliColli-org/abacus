@@ -7,8 +7,9 @@ lifecycle: active
 
 Use only after [explicit activation](release-pilot.md). Adapt the block below
 into one target-repo document, for example `docs/execution-profile.md`, and point
-the repo's AGENTS.md and CLAUDE.md at that same file when both exist. This template
-does not activate this repository or any other task. Do not install global rules
+the repo's AGENTS.md and CLAUDE.md at that same file when both exist. The pointer
+itself must say it applies only to tasks explicitly activated under the named bead.
+This template does not activate this repository or any other task. Do not install global rules
 or copy the shared contracts into the repo.
 
 The chief populates engineering facts from the repo and maintains them as they
