@@ -15,6 +15,10 @@ Every managed document appears here exactly once.
 | NORTH-STAR.md | product thesis, beneficiary, success condition, non-goals, and kill criteria |
 | docs/INDEX.md | authoritative map of the managed documentation corpus |
 | docs/lifecycle.md | operator-facing lifecycle reference: run vs drain, what bead closure means, and the hand-posted adjudication gate |
+| docs/release-pilot.md | opt-in release-led execution pilot: activation, scope, measurement and withdrawal; not the default workflow |
+| docs/release-chief-of-staff.md | activated-pilot contract: agent-directed execution and integrated delivery ownership |
+| docs/release-review.md | activated-pilot contract: independent product acceptance and evidence-bound repair review |
+| docs/release-repo-profile.md | template for repo-owned execution specifics layered over the pinned shared baseline |
 | docs/adr/0001-planning-flow.md | accepted architecture decision for the ABACUS planning flow |
 | docs/adr/0002-shared-work-state-store.md | accepted architecture decision: all lanes use one shared br store |
 | docs/adr/0003-pr-validation-and-auto-merge.md | accepted architecture decision: PR validation and auto-merge via the GitHub merge queue |
