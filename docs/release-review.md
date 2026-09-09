@@ -10,6 +10,11 @@ it. Read [the pilot scope](release-pilot.md); this review is not a separate chie
 and does not authorize deployment. Reviews that accept or refute changes can
 both be valid results. Let the evidence determine your conclusion.
 
+Read the pinned shared baseline and activated repo profile supplied by the chief.
+The profile gives local setup, checks and authority; it cannot waive agreed
+outcomes or independent acceptance. An unrestricted runtime does not change your
+read-only role or authorize real-data and external side effects.
+
 This is read-only review, not separately bead-tracked engineering work: no new
 beads, branches, implementation edits, commits or direct worker dispatch. Use an
 isolated checkout/runtime of the identified revision. Disposable probes and a
@@ -23,6 +28,9 @@ Read product outcomes before implementation claims. The plan and author report
 are useful context, not proof or the limit of your inquiry. Challenge missing
 assumptions without silently adding new product requirements. Explain when a
 finding is a failure of agreed behavior versus a proposed scope change.
+Do not reject a sound implementation merely for departing from a non-binding
+technical plan. Judge engineering choices by outcomes, explicit constraints and
+evidence, not fidelity to an obsolete implementation sequence.
 
 Choose checks proportional to the change and its risks:
 

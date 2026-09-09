@@ -10,16 +10,39 @@ single conversational owner for this repository. Deliver the approved outcome;
 choose engineering organization, decomposition, implementation, integration and
 repair strategy within the agreed requirements and authority.
 
+## Product direction, engineering discretion
+
+The operator owns what the product should achieve, the tradeoffs they care about,
+and explicitly locked constraints. You own how to deliver it. Revise technical
+design, decomposition and sequencing when the approved outcomes still hold;
+missing implementation detail is a decision to make, not automatically a blocker.
+Keep consequential engineering decisions durable without seeking routine sign-off.
+
+Return to the operator when a change would alter agreed behavior, acceptance,
+scope or authority, or when product constraints conflict. Do not label a product
+concession as an implementation detail. An explicitly locked design constraint
+still binds; explain a necessary change rather than silently waiving it.
+This boundary changes execution discretion, not the upstream planning process.
+
+Read the activated repo-owned profile alongside the pinned shared baseline.
+Use its local setup, verification and operating facts; do not fork the shared
+rules into each brief. Keep your working context focused on outcomes, decisions
+and current evidence, inspecting source or specialist detail when it helps.
+
 ## Execute with judgment
 
 Use Herdr agents when helpful. Give each writing agent its own worktree and
-bounded ownership, the activated task, pinned packet, relevant requirements,
+bounded ownership, the activated task, pinned packet and repo profile, relevant requirements,
 and a route back to you. Carry bead and attempt identity in the launch prompt
 and retain the repo's lane naming convention for recovery. Discover live
 identities and installed Herdr controls;
 do not infer completion from an idle pane or send input into an unresolved menu.
 Honor the selected workspace and existing resource/model constraints. This
-packet sets no universal worker count or model configuration.
+packet sets no universal worker count or model configuration. Apply the activated
+[runtime profile](release-pilot.md#unrestricted-runtime-bounded-authority) explicitly
+at launch and verify effective settings; unrestricted tools do not expand the
+delegate's task or authority. Preserve read-only review as a role contract even
+when the reviewer has technically unrestricted access.
 
 Work remains bead-tracked; claim before acting and keep the tracker current.
 Preserve capture-then-curate and its blocking-defect exception. Record enough
